@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.Comparator;
 import java.util.Hashtable;
 import java.util.Map;
+import java.util.Set;
 
 import org.hibernate.EntityMode;
 import org.hibernate.HibernateException;
@@ -13,8 +14,11 @@ import org.hibernate.MappingException;
 import org.hibernate.bytecode.spi.EntityInstrumentationMetadata;
 import org.hibernate.cache.spi.access.EntityRegionAccessStrategy;
 import org.hibernate.cache.spi.access.NaturalIdRegionAccessStrategy;
+import org.hibernate.cache.spi.entry.CacheEntry;
 import org.hibernate.cache.spi.entry.CacheEntryStructure;
+import org.hibernate.cache.spi.entry.StandardCacheEntryImpl;
 import org.hibernate.cache.spi.entry.UnstructuredCacheEntry;
+import org.hibernate.cfg.NotYetImplementedException;
 import org.hibernate.engine.internal.TwoPhaseLoad;
 import org.hibernate.engine.spi.CascadeStyle;
 import org.hibernate.engine.spi.Mapping;
@@ -32,6 +36,8 @@ import org.hibernate.internal.util.compare.EqualsHelper;
 import org.hibernate.mapping.PersistentClass;
 import org.hibernate.metadata.ClassMetadata;
 import org.hibernate.persister.entity.EntityPersister;
+import org.hibernate.persister.walking.spi.AttributeDefinition;
+import org.hibernate.persister.walking.spi.EntityIdentifierDefinition;
 import org.hibernate.tuple.entity.EntityMetamodel;
 import org.hibernate.tuple.entity.EntityTuplizer;
 import org.hibernate.tuple.entity.NonPojoInstrumentationMetadata;
@@ -70,6 +76,10 @@ public class CustomPersister implements EntityPersister {
 	@Override
 	public Class getMappedClass() {
 		return Custom.class;
+	}
+
+	@Override
+	public void generateEntityDefinition() {
 	}
 
 	public void postInstantiate() throws MappingException {}
@@ -304,7 +314,7 @@ public class CustomPersister implements EntityPersister {
 					LockMode.NONE,
 					false,
 					session
-				);
+			);
 			TwoPhaseLoad.postHydrate(
 					this, id,
 					new String[] { obj.getName() },
@@ -313,14 +323,14 @@ public class CustomPersister implements EntityPersister {
 					LockMode.NONE,
 					false,
 					session
-				);
+			);
 			TwoPhaseLoad.initializeEntity(
 					clone,
 					false,
 					session,
-					new PreLoadEvent( (EventSource) session ),
-					new PostLoadEvent( (EventSource) session )
-				);
+					new PreLoadEvent( (EventSource) session )
+			);
+			TwoPhaseLoad.postLoad( clone, session, new PostLoadEvent( (EventSource) session ) );
 		}
 		return clone;
 	}
@@ -563,7 +573,20 @@ public class CustomPersister implements EntityPersister {
 
 	@Override
 	public CacheEntryStructure getCacheEntryStructure() {
-		return new UnstructuredCacheEntry();
+		return UnstructuredCacheEntry.INSTANCE;
+	}
+
+	@Override
+	public CacheEntry buildCacheEntry(
+			Object entity, Object[] state, Object version, SessionImplementor session) {
+		return new StandardCacheEntryImpl(
+				state,
+				this,
+				this.hasUninitializedLazyProperties( entity ),
+				version,
+				session,
+				entity
+		);
 	}
 
 	@Override
@@ -655,5 +678,30 @@ public class CustomPersister implements EntityPersister {
 	@Override
 	public FilterAliasGenerator getFilterAliasGenerator(String rootAlias) {
 		return new StaticFilterAliasGenerator(rootAlias);
+	}
+
+	@Override
+	public EntityPersister getEntityPersister() {
+		return this;
+	}
+
+	@Override
+	public EntityIdentifierDefinition getEntityKeyDefinition() {
+		throw new NotYetImplementedException();
+	}
+
+	@Override
+	public Iterable<AttributeDefinition> getAttributes() {
+		throw new NotYetImplementedException();
+	}
+
+    @Override
+    public int[] resolveAttributeIndexes(Set<String> attributes) {
+        return null;
+    }
+
+	@Override
+	public boolean canUseReferenceCacheEntries() {
+		return false;  //To change body of implemented methods use File | Settings | File Templates.
 	}
 }

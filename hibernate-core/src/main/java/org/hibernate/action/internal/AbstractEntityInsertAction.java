@@ -72,7 +72,9 @@ public abstract class AbstractEntityInsertAction extends EntityAction {
 		this.isExecuted = false;
 		this.areTransientReferencesNullified = false;
 
-		handleNaturalIdPreSaveNotifications();
+		if ( id != null ) {
+			handleNaturalIdPreSaveNotifications();
+		}
 	}
 
 	/**
@@ -137,7 +139,7 @@ public abstract class AbstractEntityInsertAction extends EntityAction {
 	 */
 	public final void makeEntityManaged() {
 		nullifyTransientReferencesIfNotAlready();
-		Object version = Versioning.getVersion( getState(), getPersister() );
+		final Object version = Versioning.getVersion( getState(), getPersister() );
 		getSession().getPersistenceContext().addEntity(
 				getInstance(),
 				( getPersister().isMutable() ? Status.MANAGED : Status.READ_ONLY ),
@@ -166,12 +168,12 @@ public abstract class AbstractEntityInsertAction extends EntityAction {
 	protected abstract EntityKey getEntityKey();
 
 	@Override
-    public void afterDeserialize(SessionImplementor session) {
+	public void afterDeserialize(SessionImplementor session) {
 		super.afterDeserialize( session );
 		// IMPL NOTE: non-flushed changes code calls this method with session == null...
 		// guard against NullPointerException
 		if ( session != null ) {
-			EntityEntry entityEntry = session.getPersistenceContext().getEntry( getInstance() );
+			final EntityEntry entityEntry = session.getPersistenceContext().getEntry( getInstance() );
 			this.state = entityEntry.getLoadedState();
 		}
 	}
@@ -192,8 +194,20 @@ public abstract class AbstractEntityInsertAction extends EntityAction {
 
 	/**
 	 * Handle sending notifications needed for natural-id after saving
+	 *
+	 * @param generatedId The generated entity identifier
 	 */
-	protected void handleNaturalIdPostSaveNotifications() {
+	public void handleNaturalIdPostSaveNotifications(Serializable generatedId) {
+		if ( isEarlyInsert() ) {
+			// with early insert, we still need to add a local (transactional) natural id cross-reference
+			getSession().getPersistenceContext().getNaturalIdHelper().manageLocalNaturalIdCrossReference(
+					getPersister(),
+					generatedId,
+					state,
+					null,
+					CachedNaturalIdValueSource.INSERT
+			);
+		}
 		// after save, we need to manage the shared cache entries
 		getSession().getPersistenceContext().getNaturalIdHelper().manageSharedNaturalIdCrossReference(
 				getPersister(),

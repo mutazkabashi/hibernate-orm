@@ -24,24 +24,18 @@
 package org.hibernate.cfg;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Properties;
 import java.util.StringTokenizer;
 
-import org.dom4j.Attribute;
-import org.dom4j.Document;
-import org.dom4j.Element;
-import org.jboss.logging.Logger;
-
 import org.hibernate.CacheMode;
 import org.hibernate.EntityMode;
 import org.hibernate.FetchMode;
 import org.hibernate.FlushMode;
 import org.hibernate.MappingException;
-import org.hibernate.engine.internal.Versioning;
+import org.hibernate.engine.OptimisticLockStyle;
 import org.hibernate.engine.spi.ExecuteUpdateResultCheckStyle;
 import org.hibernate.engine.spi.FilterDefinition;
 import org.hibernate.engine.spi.NamedQueryDefinition;
@@ -52,6 +46,7 @@ import org.hibernate.internal.util.ReflectHelper;
 import org.hibernate.internal.util.StringHelper;
 import org.hibernate.internal.util.collections.JoinedIterator;
 import org.hibernate.internal.util.xml.XmlDocument;
+import org.hibernate.loader.PropertyPath;
 import org.hibernate.mapping.Any;
 import org.hibernate.mapping.Array;
 import org.hibernate.mapping.AuxiliaryDatabaseObject;
@@ -60,6 +55,7 @@ import org.hibernate.mapping.Bag;
 import org.hibernate.mapping.Collection;
 import org.hibernate.mapping.Column;
 import org.hibernate.mapping.Component;
+import org.hibernate.mapping.Constraint;
 import org.hibernate.mapping.DependantValue;
 import org.hibernate.mapping.FetchProfile;
 import org.hibernate.mapping.Fetchable;
@@ -82,7 +78,6 @@ import org.hibernate.mapping.OneToOne;
 import org.hibernate.mapping.PersistentClass;
 import org.hibernate.mapping.PrimitiveArray;
 import org.hibernate.mapping.Property;
-import org.hibernate.mapping.PropertyGeneration;
 import org.hibernate.mapping.RootClass;
 import org.hibernate.mapping.Selectable;
 import org.hibernate.mapping.Set;
@@ -96,10 +91,18 @@ import org.hibernate.mapping.TypeDef;
 import org.hibernate.mapping.UnionSubclass;
 import org.hibernate.mapping.UniqueKey;
 import org.hibernate.mapping.Value;
+import org.hibernate.tuple.GeneratedValueGeneration;
+import org.hibernate.tuple.GenerationTiming;
 import org.hibernate.type.BasicType;
 import org.hibernate.type.DiscriminatorType;
 import org.hibernate.type.ForeignKeyDirection;
 import org.hibernate.type.Type;
+
+import org.jboss.logging.Logger;
+
+import org.dom4j.Attribute;
+import org.dom4j.Document;
+import org.dom4j.Element;
 
 /**
  * Walks an XML mapping document and produces the Hibernate configuration-time metamodel (the
@@ -523,8 +526,10 @@ public final class HbmBinder {
 		// for version properties marked as being generated, make sure they are "always"
 		// generated; aka, "insert" is invalid; this is dis-allowed by the DTD,
 		// but just to make sure...
-		if ( prop.getGeneration() == PropertyGeneration.INSERT ) {
-			throw new MappingException( "'generated' attribute cannot be 'insert' for versioning property" );
+		if ( prop.getValueGenerationStrategy() != null ) {
+			if ( prop.getValueGenerationStrategy().getGenerationTiming() == GenerationTiming.INSERT ) {
+				throw new MappingException( "'generated' attribute cannot be 'insert' for versioning property" );
+			}
 		}
 		makeVersion( subnode, val );
 		entity.setVersion( prop );
@@ -688,7 +693,7 @@ public final class HbmBinder {
 
 		// OPTIMISTIC LOCK MODE
 		Attribute olNode = node.attribute( "optimistic-lock" );
-		entity.setOptimisticLockMode( getOptimisticLockMode( olNode ) );
+		entity.setOptimisticLockStyle( getOptimisticLockStyle( olNode ) );
 
 		entity.setMetaAttributes( getMetas( node, inheritedMetas ) );
 
@@ -1067,12 +1072,13 @@ public final class HbmBinder {
 					column.setValue( simpleValue );
 					column.setTypeIndex( count++ );
 					bindColumn( columnElement, column, isNullable );
-					final String columnName = columnElement.attributeValue( "name" );
+					String columnName = columnElement.attributeValue( "name" );
 					String logicalColumnName = mappings.getNamingStrategy().logicalColumnName(
 							columnName, propertyPath
 					);
-					column.setName( mappings.getNamingStrategy().columnName(
-						columnName ) );
+					columnName = mappings.getNamingStrategy().columnName( columnName );
+					columnName = quoteIdentifier( columnName, mappings );
+					column.setName( columnName );
 					if ( table != null ) {
 						table.addColumn( column ); // table=null -> an association
 						                           // - fill it in later
@@ -1122,11 +1128,13 @@ public final class HbmBinder {
 			if ( column.isUnique() && ManyToOne.class.isInstance( simpleValue ) ) {
 				( (ManyToOne) simpleValue ).markAsLogicalOneToOne();
 			}
-			final String columnName = columnAttribute.getValue();
+			String columnName = columnAttribute.getValue();
 			String logicalColumnName = mappings.getNamingStrategy().logicalColumnName(
 					columnName, propertyPath
 			);
-			column.setName( mappings.getNamingStrategy().columnName( columnName ) );
+			columnName = mappings.getNamingStrategy().columnName( columnName );
+			columnName = quoteIdentifier( columnName, mappings );
+			column.setName( columnName );
 			if ( table != null ) {
 				table.addColumn( column ); // table=null -> an association - fill
 				                           // it in later
@@ -1142,7 +1150,9 @@ public final class HbmBinder {
 			Column column = new Column();
 			column.setValue( simpleValue );
 			bindColumn( node, column, isNullable );
-			column.setName( mappings.getNamingStrategy().propertyToColumnName( propertyPath ) );
+			String columnName = mappings.getNamingStrategy().propertyToColumnName( propertyPath );
+			columnName = quoteIdentifier( columnName, mappings );
+			column.setName( columnName );
 			String logicalName = mappings.getNamingStrategy().logicalColumnName( null, propertyPath );
 			mappings.addColumnBinding( logicalName, column, table );
 			/* TODO: joinKeyColumnName & foreignKeyColumnName should be called either here or at a
@@ -1291,46 +1301,51 @@ public final class HbmBinder {
 
 		Attribute generatedNode = node.attribute( "generated" );
         String generationName = generatedNode == null ? null : generatedNode.getValue();
-        PropertyGeneration generation = PropertyGeneration.parse( generationName );
-		property.setGeneration( generation );
 
-        if ( generation == PropertyGeneration.ALWAYS || generation == PropertyGeneration.INSERT ) {
-	        // generated properties can *never* be insertable...
-	        if ( property.isInsertable() ) {
-		        if ( insertNode == null ) {
-			        // insertable simply because that is the user did not specify
-			        // anything; just override it
+		// Handle generated properties.
+		GenerationTiming generationTiming = GenerationTiming.parseFromName( generationName );
+		if ( generationTiming == GenerationTiming.ALWAYS || generationTiming == GenerationTiming.INSERT ) {
+			// we had generation specified...
+			//   	HBM only supports "database generated values"
+			property.setValueGenerationStrategy( new GeneratedValueGeneration( generationTiming ) );
+
+			// generated properties can *never* be insertable...
+			if ( property.isInsertable() ) {
+				if ( insertNode == null ) {
+					// insertable simply because that is the user did not specify
+					// anything; just override it
 					property.setInsertable( false );
-		        }
-		        else {
-			        // the user specifically supplied insert="true",
-			        // which constitutes an illegal combo
+				}
+				else {
+					// the user specifically supplied insert="true",
+					// which constitutes an illegal combo
 					throw new MappingException(
-							"cannot specify both insert=\"true\" and generated=\"" + generation.getName() +
-							"\" for property: " +
-							propName
+							"cannot specify both insert=\"true\" and generated=\"" + generationTiming.name().toLowerCase() +
+									"\" for property: " +
+									propName
 					);
-		        }
-	        }
+				}
+			}
 
-	        // properties generated on update can never be updateable...
-	        if ( property.isUpdateable() && generation == PropertyGeneration.ALWAYS ) {
-		        if ( updateNode == null ) {
-			        // updateable only because the user did not specify
-			        // anything; just override it
-			        property.setUpdateable( false );
-		        }
-		        else {
-			        // the user specifically supplied update="true",
-			        // which constitutes an illegal combo
+			// properties generated on update can never be updateable...
+			if ( property.isUpdateable() && generationTiming == GenerationTiming.ALWAYS ) {
+				if ( updateNode == null ) {
+					// updateable only because the user did not specify
+					// anything; just override it
+					property.setUpdateable( false );
+				}
+				else {
+					// the user specifically supplied update="true",
+					// which constitutes an illegal combo
 					throw new MappingException(
-							"cannot specify both update=\"true\" and generated=\"" + generation.getName() +
-							"\" for property: " +
-							propName
+							"cannot specify both update=\"true\" and generated=\"" + generationTiming.name().toLowerCase() +
+									"\" for property: " +
+									propName
 					);
-		        }
-	        }
-        }
+				}
+			}
+		}
+
 
 		boolean isLazyable = "property".equals( node.getName() ) ||
 				"component".equals( node.getName() ) ||
@@ -1404,6 +1419,12 @@ public final class HbmBinder {
 		if ( nodeName == null ) nodeName = node.attributeValue( "name" );
 		collection.setNodeName( nodeName );
 		String embed = node.attributeValue( "embed-xml" );
+		// sometimes embed is set to the default value when not specified in the mapping,
+		// so can't seem to determine if an attribute was explicitly set;
+		// log a warning if embed has a value different from the default.
+		if ( !StringHelper.isEmpty( embed ) &&  !"true".equals( embed ) ) {
+			LOG.embedXmlAttributesNoLongerSupported();
+		}
 		collection.setEmbedded( embed==null || "true".equals(embed) );
 
 
@@ -1623,10 +1644,17 @@ public final class HbmBinder {
 		if ( ukName != null ) {
 			manyToOne.setReferencedPropertyName( ukName.getValue() );
 		}
+		manyToOne.setReferenceToPrimaryKey( manyToOne.getReferencedPropertyName() == null );
 
 		manyToOne.setReferencedEntityName( getEntityName( node, mappings ) );
 
 		String embed = node.attributeValue( "embed-xml" );
+		// sometimes embed is set to the default value when not specified in the mapping,
+		// so can't seem to determine if an attribute was explicitly set;
+		// log a warning if embed has a value different from the default.
+		if ( !StringHelper.isEmpty( embed ) &&  !"true".equals( embed ) ) {
+			LOG.embedXmlAttributesNoLongerSupported();
+		}
 		manyToOne.setEmbedded( embed == null || "true".equals( embed ) );
 
 		String notFound = node.attributeValue( "not-found" );
@@ -1702,13 +1730,21 @@ public final class HbmBinder {
 		initOuterJoinFetchSetting( node, oneToOne );
 		initLaziness( node, oneToOne, mappings, true );
 
-		oneToOne.setEmbedded( "true".equals( node.attributeValue( "embed-xml" ) ) );
+		String embed = node.attributeValue( "embed-xml" );
+		// sometimes embed is set to the default value when not specified in the mapping,
+		// so can't seem to determine if an attribute was explicitly set;
+		// log a warning if embed has a value different from the default.
+		if ( !StringHelper.isEmpty( embed ) &&  !"true".equals( embed ) ) {
+			LOG.embedXmlAttributesNoLongerSupported();
+		}
+		oneToOne.setEmbedded( "true".equals( embed ) );
 
 		Attribute fkNode = node.attribute( "foreign-key" );
 		if ( fkNode != null ) oneToOne.setForeignKeyName( fkNode.getValue() );
 
 		Attribute ukName = node.attribute( "property-ref" );
 		if ( ukName != null ) oneToOne.setReferencedPropertyName( ukName.getValue() );
+		oneToOne.setReferenceToPrimaryKey( oneToOne.getReferencedPropertyName() == null );
 
 		oneToOne.setPropertyName( node.attributeValue( "name" ) );
 
@@ -1730,6 +1766,12 @@ public final class HbmBinder {
 		oneToMany.setReferencedEntityName( getEntityName( node, mappings ) );
 
 		String embed = node.attributeValue( "embed-xml" );
+		// sometimes embed is set to the default value when not specified in the mapping,
+		// so can't seem to determine if an attribute was explicitly set;
+		// log a warning if embed has a value different from the default.
+		if ( !StringHelper.isEmpty( embed ) &&  !"true".equals( embed ) ) {
+			LOG.embedXmlAttributesNoLongerSupported();
+		}
 		oneToMany.setEmbedded( embed == null || "true".equals( embed ) );
 
 		String notFound = node.attributeValue( "not-found" );
@@ -1848,7 +1890,7 @@ public final class HbmBinder {
 				);
 			persistentClass.setIdentifierMapper(mapper);
 			Property property = new Property();
-			property.setName("_identifierMapper");
+			property.setName( PropertyPath.IDENTIFIER_MAPPER_PROPERTY );
 			property.setNodeName("id");
 			property.setUpdateable(false);
 			property.setInsertable(false);
@@ -2053,21 +2095,41 @@ public final class HbmBinder {
 				}
 			}
 			else {
-				// use old (HB 2.1) defaults if outer-join is specified
-				String eoj = jfNode.getValue();
-				if ( "auto".equals( eoj ) ) {
-					fetchStyle = FetchMode.DEFAULT;
+				if ( "many-to-many".equals( node.getName() ) ) {
+					//NOTE <many-to-many outer-join="..." is deprecated.:
+					// Default to join and non-lazy for the "second join"
+					// of the many-to-many
+					LOG.deprecatedManyToManyOuterJoin();
+					lazy = false;
+					fetchStyle = FetchMode.JOIN;
 				}
 				else {
-					boolean join = "true".equals( eoj );
-					fetchStyle = join ? FetchMode.JOIN : FetchMode.SELECT;
+					// use old (HB 2.1) defaults if outer-join is specified
+					String eoj = jfNode.getValue();
+					if ( "auto".equals( eoj ) ) {
+						fetchStyle = FetchMode.DEFAULT;
+					}
+					else {
+						boolean join = "true".equals( eoj );
+						fetchStyle = join ? FetchMode.JOIN : FetchMode.SELECT;
+					}
 				}
 			}
 		}
 		else {
-			boolean join = "join".equals( fetchNode.getValue() );
-			//lazy = !join;
-			fetchStyle = join ? FetchMode.JOIN : FetchMode.SELECT;
+			if ( "many-to-many".equals( node.getName() ) ) {
+				//NOTE <many-to-many fetch="..." is deprecated.:
+				// Default to join and non-lazy for the "second join"
+				// of the many-to-many
+				LOG.deprecatedManyToManyFetch();
+				lazy = false;
+				fetchStyle = FetchMode.JOIN;
+			}
+			else {
+				boolean join = "join".equals( fetchNode.getValue() );
+				//lazy = !join;
+				fetchStyle = join ? FetchMode.JOIN : FetchMode.SELECT;
+			}
 		}
 		model.setFetchMode( fetchStyle );
 		model.setLazy(lazy);
@@ -2222,7 +2284,6 @@ public final class HbmBinder {
 			}
 			else if ( "natural-id".equals( name ) ) {
 				UniqueKey uk = new UniqueKey();
-				uk.setName("_UniqueKey");
 				uk.setTable(table);
 				//by default, natural-ids are "immutable" (constant)
 				boolean mutableId = "true".equals( subnode.attributeValue("mutable") );
@@ -2236,6 +2297,8 @@ public final class HbmBinder {
 						false,
 						true
 					);
+				uk.setName( Constraint.generateName( uk.generatedConstraintNamePrefix(),
+						table, uk.getColumns() ) );
 				table.addUniqueKey(uk);
 			}
 			else if ( "query".equals(name) ) {
@@ -2294,6 +2357,7 @@ public final class HbmBinder {
 			if ( propertyRef != null ) {
 				mappings.addUniquePropertyReference( toOne.getReferencedEntityName(), propertyRef );
 			}
+			toOne.setCascadeDeleteEnabled( "cascade".equals( subnode.attributeValue( "on-delete" ) ) );
 		}
 		else if ( value instanceof Collection ) {
 			Collection coll = (Collection) value;
@@ -2632,6 +2696,7 @@ public final class HbmBinder {
 			        "not valid within collection using join fetching [" + collection.getRole() + "]"
 				);
 		}
+		final boolean debugEnabled = LOG.isDebugEnabled();
 		while ( filters.hasNext() ) {
 			final Element filterElement = ( Element ) filters.next();
 			final String name = filterElement.attributeValue( "name" );
@@ -2649,7 +2714,7 @@ public final class HbmBinder {
 				Element alias = (Element) aliasesIterator.next();
 				aliasTables.put(alias.attributeValue("alias"), alias.attributeValue("table"));
 			}
-			if ( LOG.isDebugEnabled() ) {
+			if ( debugEnabled ) {
 				LOG.debugf( "Applying many-to-many filter [%s] as [%s] to role [%s]", name, condition, collection.getRole() );
 			}
 			String autoAliasInjectionText = filterElement.attributeValue("autoAliasInjection");
@@ -2906,21 +2971,23 @@ public final class HbmBinder {
 		}
 	}
 
-	private static int getOptimisticLockMode(Attribute olAtt) throws MappingException {
+	private static OptimisticLockStyle getOptimisticLockStyle(Attribute olAtt) throws MappingException {
+		if ( olAtt == null ) {
+			return OptimisticLockStyle.VERSION;
+		}
 
-		if ( olAtt == null ) return Versioning.OPTIMISTIC_LOCK_VERSION;
-		String olMode = olAtt.getValue();
+		final String olMode = olAtt.getValue();
 		if ( olMode == null || "version".equals( olMode ) ) {
-			return Versioning.OPTIMISTIC_LOCK_VERSION;
+			return OptimisticLockStyle.VERSION;
 		}
 		else if ( "dirty".equals( olMode ) ) {
-			return Versioning.OPTIMISTIC_LOCK_DIRTY;
+			return OptimisticLockStyle.DIRTY;
 		}
 		else if ( "all".equals( olMode ) ) {
-			return Versioning.OPTIMISTIC_LOCK_ALL;
+			return OptimisticLockStyle.ALL;
 		}
 		else if ( "none".equals( olMode ) ) {
-			return Versioning.OPTIMISTIC_LOCK_NONE;
+			return OptimisticLockStyle.NONE;
 		}
 		else {
 			throw new MappingException( "Unsupported optimistic-lock style: " + olMode );
@@ -2942,7 +3009,7 @@ public final class HbmBinder {
 			boolean inheritable = Boolean
 				.valueOf( metaNode.attributeValue( "inherit" ) )
 				.booleanValue();
-			if ( onlyInheritable & !inheritable ) {
+			if ( onlyInheritable && !inheritable ) {
 				continue;
 			}
 			String name = metaNode.attributeValue( "attribute" );
@@ -3015,7 +3082,7 @@ public final class HbmBinder {
 		//TODO: bad implementation, cos it depends upon ordering of mapping doc
 		//      fixing this requires that Collection/PersistentClass gain access
 		//      to the Mappings reference from Configuration (or the filterDefinitions
-		//      map directly) sometime during Configuration.buildSessionFactory
+		//      map directly) sometime during Configuration.build
 		//      (after all the types/filter-defs are known and before building
 		//      persisters).
 		if ( StringHelper.isEmpty(condition) ) {
@@ -3163,6 +3230,11 @@ public final class HbmBinder {
 			);
 			recognizeEntities( mappings, element, handler );
 		}
+	}
+	
+	private static String quoteIdentifier(String identifier, Mappings mappings) {
+		return mappings.getObjectNameNormalizer().isUseQuotedIdentifiersGlobally()
+				? StringHelper.quote( identifier ) : identifier;
 	}
 
 	private static interface EntityElementHandler {

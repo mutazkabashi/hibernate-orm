@@ -97,10 +97,10 @@ public class CacheKey implements Serializable {
 			//hashCode is part of this check since it is pre-calculated and hash must match for equals to be true
 			return false;
 		}
-		CacheKey that = (CacheKey) other;
-		return EqualsHelper.equals( entityOrRoleName, that.entityOrRoleName ) &&
-				type.isEqual( key, that.key ) &&
-				EqualsHelper.equals( tenantId, that.tenantId );
+		final CacheKey that = (CacheKey) other;
+		return EqualsHelper.equals( entityOrRoleName, that.entityOrRoleName )
+				&& type.isEqual( key, that.key )
+				&& EqualsHelper.equals( tenantId, that.tenantId );
 	}
 
 	@Override
@@ -110,7 +110,7 @@ public class CacheKey implements Serializable {
 
 	@Override
 	public String toString() {
-		// Mainly for OSCache
-		return entityOrRoleName + '#' + key.toString();//"CacheKey#" + type.toString(key, sf);
+		// Used to be required for OSCache
+		return entityOrRoleName + '#' + key.toString();
 	}
 }

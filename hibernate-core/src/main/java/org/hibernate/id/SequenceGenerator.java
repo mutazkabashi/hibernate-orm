@@ -29,8 +29,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Properties;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.MappingException;
 import org.hibernate.cfg.ObjectNameNormalizer;
@@ -39,6 +37,8 @@ import org.hibernate.engine.spi.SessionImplementor;
 import org.hibernate.internal.util.config.ConfigurationHelper;
 import org.hibernate.mapping.Table;
 import org.hibernate.type.Type;
+
+import org.jboss.logging.Logger;
 
 /**
  * <b>sequence</b><br>
@@ -49,7 +49,6 @@ import org.hibernate.type.Type;
  * Mapping parameters supported: sequence, parameters.
  *
  * @see SequenceHiLoGenerator
- * @see TableHiLoGenerator
  * @author Gavin King
  */
 public class SequenceGenerator
@@ -120,7 +119,7 @@ public class SequenceGenerator
 		try {
 			PreparedStatement st = session.getTransactionCoordinator().getJdbcCoordinator().getStatementPreparer().prepareStatement( sql );
 			try {
-				ResultSet rs = st.executeQuery();
+				ResultSet rs = session.getTransactionCoordinator().getJdbcCoordinator().getResultSetReturn().extract( st );
 				try {
 					rs.next();
 					IntegralDataTypeHolder result = buildHolder();
@@ -129,11 +128,11 @@ public class SequenceGenerator
 					return result;
 				}
 				finally {
-					rs.close();
+					session.getTransactionCoordinator().getJdbcCoordinator().release( rs, st );
 				}
 			}
 			finally {
-				st.close();
+				session.getTransactionCoordinator().getJdbcCoordinator().release( st );
 			}
 
 		}

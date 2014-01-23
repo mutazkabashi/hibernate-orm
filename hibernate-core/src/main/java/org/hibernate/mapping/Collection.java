@@ -22,7 +22,9 @@
  * Boston, MA  02110-1301  USA
  */
 package org.hibernate.mapping;
+
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -36,7 +38,6 @@ import org.hibernate.engine.spi.Mapping;
 import org.hibernate.internal.FilterConfiguration;
 import org.hibernate.internal.util.ReflectHelper;
 import org.hibernate.internal.util.collections.ArrayHelper;
-import org.hibernate.internal.util.collections.EmptyIterator;
 import org.hibernate.type.CollectionType;
 import org.hibernate.type.Type;
 
@@ -71,6 +72,7 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 	private String referencedPropertyName;
 	private String nodeName;
 	private String elementNodeName;
+	private String mappedByProperty;
 	private boolean sorted;
 	private Comparator comparator;
 	private String comparatorClassName;
@@ -212,7 +214,7 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 	}
 
 	public void setRole(String role) {
-		this.role = role==null ? null : role.intern();
+		this.role = role;
 	}
 
 	public void setSorted(boolean sorted) {
@@ -365,8 +367,8 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 		}
 	}
 
-	public Iterator getColumnIterator() {
-		return EmptyIterator.INSTANCE;
+	public Iterator<Selectable> getColumnIterator() {
+		return Collections.<Selectable>emptyList().iterator();
 	}
 
 	public int getColumnSpan() {
@@ -384,7 +386,7 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 		else {
 			return mappings.getTypeResolver()
 					.getTypeFactory()
-					.customCollection( typeName, typeParameters, role, referencedPropertyName, isEmbedded() );
+					.customCollection( typeName, typeParameters, role, referencedPropertyName );
 		}
 	}
 
@@ -549,7 +551,7 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 	}
 
 	public void setLoaderName(String name) {
-		this.loaderName = name==null ? null : name.intern();
+		this.loaderName = name;
 	}
 
 	public String getReferencedPropertyName() {
@@ -557,7 +559,7 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 	}
 
 	public void setReferencedPropertyName(String propertyRef) {
-		this.referencedPropertyName = propertyRef==null ? null : propertyRef.intern();
+		this.referencedPropertyName = propertyRef;
 	}
 
 	public boolean isOptimisticLocked() {
@@ -612,10 +614,20 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 		this.elementNodeName = elementNodeName;
 	}
 
+	/**
+	 * @deprecated To be removed in 5.  Removed as part of removing the notion of DOM entity-mode.
+	 * See Jira issue: <a href="https://hibernate.onjira.com/browse/HHH-7771">HHH-7771</a>
+	 */
+	@Deprecated
 	public boolean isEmbedded() {
 		return embedded;
 	}
 
+	/**
+	 * @deprecated To be removed in 5.  Removed as part of removing the notion of DOM entity-mode.
+	 * See Jira issue: <a href="https://hibernate.onjira.com/browse/HHH-7771">HHH-7771</a>
+	 */
+	@Deprecated
 	public void setEmbedded(boolean embedded) {
 		this.embedded = embedded;
 	}
@@ -655,5 +667,13 @@ public abstract class Collection implements Fetchable, Value, Filterable {
 	
 	public String getComparatorClassName() {
 		return comparatorClassName;
+	}
+
+	public String getMappedByProperty() {
+		return mappedByProperty;
+	}
+
+	public void setMappedByProperty(String mappedByProperty) {
+		this.mappedByProperty = mappedByProperty;
 	}
 }

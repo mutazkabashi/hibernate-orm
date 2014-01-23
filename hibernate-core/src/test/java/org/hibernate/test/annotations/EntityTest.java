@@ -39,6 +39,8 @@ import org.hibernate.Query;
 import org.hibernate.Session;
 import org.hibernate.StaleStateException;
 import org.hibernate.Transaction;
+import org.hibernate.dialect.Oracle10gDialect;
+import org.hibernate.testing.SkipForDialect;
 import org.hibernate.testing.junit4.BaseCoreFunctionalTestCase;
 import org.hibernate.tool.hbm2ddl.SchemaExport;
 import org.hibernate.type.StandardBasicTypes;
@@ -62,7 +64,7 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		Session s = openSession();
 		Transaction tx = s.beginTransaction();
 		Flight firstOne = new Flight();
-		firstOne.setId( new Long( 1 ) );
+		firstOne.setId( Long.valueOf( 1 ) );
 		firstOne.setName( "AF3202" );
 		firstOne.setDuration( new Long( 1000000 ) );
 		firstOne.setDurationInSec( 2000 );
@@ -74,11 +76,11 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		//read it
 		s = openSession();
 		tx = s.beginTransaction();
-		firstOne = (Flight) s.get( Flight.class, new Long( 1 ) );
+		firstOne = (Flight) s.get( Flight.class, Long.valueOf( 1 ) );
 		assertNotNull( firstOne );
-		assertEquals( new Long( 1 ), firstOne.getId() );
+		assertEquals( Long.valueOf( 1 ), firstOne.getId() );
 		assertEquals( "AF3202", firstOne.getName() );
-		assertEquals( new Long( 1000000 ), firstOne.getDuration() );
+		assertEquals( Long.valueOf( 1000000 ), firstOne.getDuration() );
 		assertFalse( "Transient is not working", 2000l == firstOne.getDurationInSec() );
 		tx.commit();
 		s.close();
@@ -90,9 +92,9 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		Session s = openSession();
 		Transaction tx = s.beginTransaction();
 		Flight firstOne = new Flight();
-		firstOne.setId( new Long( 1 ) );
+		firstOne.setId( Long.valueOf( 1 ) );
 		firstOne.setName( "AF3202" );
-		firstOne.setDuration( new Long( 1000000 ) );
+		firstOne.setDuration( Long.valueOf( 1000000 ) );
 		firstOne.setDurationInSec( 2000 );
 		s.save( firstOne );
 		s.flush();
@@ -103,7 +105,7 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		s = openSession();
 		tx = s.beginTransaction();
 		firstOne = new Flight();
-		firstOne.setId( new Long( 1 ) );
+		firstOne.setId( Long.valueOf( 1 ) );
 		firstOne.setName( null );
 
 		try {
@@ -122,7 +124,7 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		s = openSession();
 		tx = s.beginTransaction();
 		firstOne = new Flight();
-		firstOne.setId( new Long( 1 ) );
+		firstOne.setId( Long.valueOf( 1 ) );
 		firstOne.setName( "AF3202" );
 		firstOne.setTriggeredData( "should not be insertable" );
 		tx.commit();
@@ -130,9 +132,9 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 
 		s = openSession();
 		tx = s.beginTransaction();
-		firstOne = (Flight) s.get( Flight.class, new Long( 1 ) );
+		firstOne = (Flight) s.get( Flight.class, Long.valueOf( 1 ) );
 		assertNotNull( firstOne );
-		assertEquals( new Long( 1 ), firstOne.getId() );
+		assertEquals( Long.valueOf( 1 ), firstOne.getId() );
 		assertEquals( "AF3202", firstOne.getName() );
 		assertFalse( "should not be insertable".equals( firstOne.getTriggeredData() ) );
 		firstOne.setName( "BA1234" );
@@ -142,9 +144,9 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 
 		s = openSession();
 		tx = s.beginTransaction();
-		firstOne = (Flight) s.get( Flight.class, new Long( 1 ) );
+		firstOne = (Flight) s.get( Flight.class, Long.valueOf( 1 ) );
 		assertNotNull( firstOne );
-		assertEquals( new Long( 1 ), firstOne.getId() );
+		assertEquals( Long.valueOf( 1 ), firstOne.getId() );
 		assertEquals( "AF3202", firstOne.getName() );
 		assertFalse( "should not be updatable".equals( firstOne.getTriggeredData() ) );
 		tx.commit();
@@ -158,13 +160,13 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		s = openSession();
 		tx = s.beginTransaction();
 		Sky sky = new Sky();
-		sky.id = new Long( 2 );
+		sky.id = Long.valueOf( 2 );
 		sky.color = "blue";
 		sky.day = "monday";
 		sky.month = "January";
 
 		Sky sameSky = new Sky();
-		sameSky.id = new Long( 3 );
+		sameSky.id = Long.valueOf( 3 );
 		sameSky.color = "blue";
 		sky.day = "tuesday";
 		sky.month = "January";
@@ -193,19 +195,19 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		s = openSession();
 		tx = s.beginTransaction();
 		Sky sky = new Sky();
-		sky.id = new Long( id++ );
+		sky.id = Long.valueOf( id++ );
 		sky.color = "green";
 		sky.day = "monday";
 		sky.month = "March";
 
 		Sky otherSky = new Sky();
-		otherSky.id = new Long( id++ );
+		otherSky.id = Long.valueOf( id++ );
 		otherSky.color = "red";
 		otherSky.day = "friday";
 		otherSky.month = "March";
 
 		Sky sameSky = new Sky();
-		sameSky.id = new Long( id++ );
+		sameSky.id = Long.valueOf( id++ );
 		sameSky.color = "green";
 		sameSky.day = "monday";
 		sameSky.month = "March";
@@ -239,9 +241,9 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		Session s = openSession();
 		Transaction tx = s.beginTransaction();
 		Flight firstOne = new Flight();
-		firstOne.setId( new Long( 2 ) );
+		firstOne.setId( Long.valueOf( 2 ) );
 		firstOne.setName( "AF3202" );
-		firstOne.setDuration( new Long( 500 ) );
+		firstOne.setDuration( Long.valueOf( 500 ) );
 		s.save( firstOne );
 		s.flush();
 		tx.commit();
@@ -250,15 +252,15 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		//read it
 		s = openSession();
 		tx = s.beginTransaction();
-		firstOne = (Flight) s.get( Flight.class, new Long( 2 ) );
+		firstOne = (Flight) s.get( Flight.class, Long.valueOf( 2 ) );
 		tx.commit();
 		s.close();
 
 		//read it again
 		s = openSession();
 		tx = s.beginTransaction();
-		Flight concurrentOne = (Flight) s.get( Flight.class, new Long( 2 ) );
-		concurrentOne.setDuration( new Long( 1000 ) );
+		Flight concurrentOne = (Flight) s.get( Flight.class, Long.valueOf( 2 ) );
+		concurrentOne.setDuration( Long.valueOf( 1000 ) );
 		s.update( concurrentOne );
 		tx.commit();
 		s.close();
@@ -290,22 +292,22 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		s = openSession();
 		tx = s.beginTransaction();
 		Sky sky = new Sky();
-		sky.id = new Long( 1 );
+		sky.id = Long.valueOf( 1 );
 		sky.color = "black";
-		Sky.area = "Paris";
+		sky.area = "Paris";
 		sky.day = "23";
 		sky.month = "1";
 		s.save( sky );
 		tx.commit();
 		s.close();
-		Sky.area = "London";
+		sky.area = "London";
 
 		s = openSession();
 		tx = s.beginTransaction();
 		sky = (Sky) s.get( Sky.class, sky.id );
 		assertNotNull( sky );
 		assertEquals( "black", sky.color );
-		assertFalse( "Paris".equals( Sky.area ) );
+		assertFalse( "Paris".equals( sky.area ) );
 		tx.commit();
 		s.close();
 	}
@@ -336,9 +338,9 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		Session s = openSession();
 		Transaction tx = s.beginTransaction();
 		Flight airFrance = new Flight();
-		airFrance.setId( new Long( 747 ) );
+		airFrance.setId( Long.valueOf( 747 ) );
 		airFrance.setName( "Paris-Amsterdam" );
-		airFrance.setDuration( new Long( 10 ) );
+		airFrance.setDuration( Long.valueOf( 10 ) );
 		airFrance.setFactor( 25 );
 		s.persist( airFrance );
 		tx.commit();
@@ -348,7 +350,7 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		tx = s.beginTransaction();
 		airFrance = (Flight) s.get( Flight.class, airFrance.getId() );
 		assertNotNull( airFrance );
-		assertEquals( new Long( 10 ), airFrance.getDuration() );
+		assertEquals( Long.valueOf( 10 ), airFrance.getDuration() );
 		assertFalse( 25 == airFrance.getFactor( false ) );
 		s.delete( airFrance );
 		tx.commit();
@@ -356,13 +358,14 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+	@SkipForDialect(value = Oracle10gDialect.class, comment = "oracle12c returns time in getDate.  For now, skip.")
 	public void testTemporalType() throws Exception {
 		Session s = openSession();
 		Transaction tx = s.beginTransaction();
 		Flight airFrance = new Flight();
-		airFrance.setId( new Long( 747 ) );
+		airFrance.setId( Long.valueOf( 747 ) );
 		airFrance.setName( "Paris-Amsterdam" );
-		airFrance.setDuration( new Long( 10 ) );
+		airFrance.setDuration( Long.valueOf( 10 ) );
 		airFrance.setDepartureDate( new Date( 05, 06, 21, 10, 0, 0 ) );
 		airFrance.setAlternativeDepartureDate( new GregorianCalendar( 2006, 02, 03, 10, 00 ) );
 		airFrance.getAlternativeDepartureDate().setTimeZone( TimeZone.getTimeZone( "GMT" ) );
@@ -394,7 +397,7 @@ public class EntityTest extends BaseCoreFunctionalTestCase {
 		Session s = openSession();
 		Transaction tx = s.beginTransaction();
 		Flight airFrance = new Flight();
-		airFrance.setId( new Long( 747 ) );
+		airFrance.setId( Long.valueOf( 747 ) );
 		airFrance.setName( "Paris-Amsterdam" );
 		airFrance.setDuration( null );
 		try {

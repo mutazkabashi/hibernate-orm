@@ -23,8 +23,6 @@
  */
 package org.hibernate.event.internal;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.collection.spi.PersistentCollection;
 import org.hibernate.engine.spi.CollectionEntry;
@@ -33,6 +31,8 @@ import org.hibernate.event.spi.EventSource;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.pretty.MessageHelper;
 import org.hibernate.type.CollectionType;
+
+import org.jboss.logging.Logger;
 
 /**
  * Evict any collections referenced by the object from the session cache.
@@ -79,8 +79,12 @@ public class EvictVisitor extends AbstractVisitor {
 		if ( LOG.isDebugEnabled() ) {
 			LOG.debugf( "Evicting collection: %s",
 					MessageHelper.collectionInfoString( ce.getLoadedPersister(),
+							collection,
 							ce.getLoadedKey(),
-							getSession().getFactory() ) );
+							getSession() ) );
+		}
+		if (ce.getLoadedPersister() != null && ce.getLoadedPersister().getBatchSize() > 1) {
+			getSession().getPersistenceContext().getBatchFetchQueue().removeBatchLoadableCollection(ce);
 		}
 		if ( ce.getLoadedPersister() != null && ce.getLoadedKey() != null ) {
 			//TODO: is this 100% correct?

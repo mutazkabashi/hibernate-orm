@@ -23,13 +23,11 @@
  */
 package org.hibernate.engine.jdbc.spi;
 
-import java.sql.ResultSet;
-
 import org.hibernate.dialect.Dialect;
 import org.hibernate.engine.jdbc.LobCreationContext;
 import org.hibernate.engine.jdbc.LobCreator;
-import org.hibernate.service.Service;
 import org.hibernate.engine.jdbc.connections.spi.ConnectionProvider;
+import org.hibernate.service.Service;
 
 /**
  * Contract for services around JDBC operations.  These represent shared resources, aka not varied by session/use.
@@ -88,7 +86,7 @@ public interface JdbcServices extends Service {
 	public LobCreator getLobCreator(LobCreationContext lobCreationContext);
 
 	/**
-	 * Obtain service for wrapping a {@link ResultSet} in a "column name cache" wrapper.
+	 * Obtain service for wrapping a {@link java.sql.ResultSet} in a "column name cache" wrapper.
 	 * @return The ResultSet wrapper.
 	 */
 	public ResultSetWrapper getResultSetWrapper();

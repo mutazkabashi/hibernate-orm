@@ -199,16 +199,12 @@ public class Table extends AbstractTableSpecification implements Exportable {
 
 			}
 
-			boolean useUniqueConstraint = col.isUnique() &&
-					( col.isNullable() || dialect.supportsNotNullUnique() );
-			if ( useUniqueConstraint ) {
-				if ( dialect.supportsUnique() ) {
-					buf.append( " unique" );
-				}
-				else {
-					UniqueKey uk = getOrCreateUniqueKey( col.getColumnName().encloseInQuotesIfQuoted( dialect ) + '_' );
-					uk.addColumn( col );
-				}
+			if ( col.isUnique() ) {
+				UniqueKey uk = getOrCreateUniqueKey( col.getColumnName()
+						.encloseInQuotesIfQuoted( dialect ) + '_' );
+				uk.addColumn( col );
+				buf.append( dialect.getUniqueDelegate()
+						.getColumnDefinitionUniquenessFragment( col ) );
 			}
 
 			if ( col.getCheckCondition() != null && dialect.supportsColumnCheck() ) {
@@ -227,14 +223,7 @@ public class Table extends AbstractTableSpecification implements Exportable {
 					.append( getPrimaryKey().sqlConstraintStringInCreateTable( dialect ) );
 		}
 
-		if ( dialect.supportsUniqueConstraintInCreateAlterTable() ) {
-			for ( UniqueKey uk : uniqueKeys.values() ) {
-				String constraint = uk.sqlConstraintStringInCreateTable( dialect );
-				if ( constraint != null ) {
-					buf.append( ", " ).append( constraint );
-				}
-			}
-		}
+		buf.append( dialect.getUniqueDelegate().getTableCreationUniqueConstraintsFragment( this ) );
 
 		if ( dialect.supportsTableCheck() ) {
 			for ( CheckConstraint checkConstraint : checkConstraints ) {
@@ -279,16 +268,7 @@ public class Table extends AbstractTableSpecification implements Exportable {
 
 	@Override
 	public String[] sqlDropStrings(Dialect dialect) {
-		StringBuilder buf = new StringBuilder( "drop table " );
-		if ( dialect.supportsIfExistsBeforeTableName() ) {
-			buf.append( "if exists " );
-		}
-		buf.append( getQualifiedName( dialect ) )
-				.append( dialect.getCascadeConstraintsString() );
-		if ( dialect.supportsIfExistsAfterTableName() ) {
-			buf.append( " if exists" );
-		}
-		return new String[] { buf.toString() };
+		return new String[] { dialect.getDropTableString( getQualifiedName( dialect ) ) };
 	}
 
 	@Override

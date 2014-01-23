@@ -28,8 +28,6 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Properties;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.MappingException;
 import org.hibernate.dialect.Dialect;
@@ -40,6 +38,8 @@ import org.hibernate.id.insert.InsertGeneratedIdentifierDelegate;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.sql.Insert;
 import org.hibernate.type.Type;
+
+import org.jboss.logging.Logger;
 
 /**
  * A generator which combines sequence generation with immediate retrieval
@@ -107,8 +107,8 @@ public class SequenceIdentityGenerator
 		}
 
 		@Override
-		protected Serializable executeAndExtract(PreparedStatement insert) throws SQLException {
-			insert.executeUpdate();
+		protected Serializable executeAndExtract(PreparedStatement insert, SessionImplementor session) throws SQLException {
+						session.getTransactionCoordinator().getJdbcCoordinator().getResultSetReturn().executeUpdate( insert );
 			return IdentifierGeneratorHelper.getGeneratedIdentity(
 					insert.getGeneratedKeys(),
 					getPersister().getRootTableKeyColumnNames()[0],

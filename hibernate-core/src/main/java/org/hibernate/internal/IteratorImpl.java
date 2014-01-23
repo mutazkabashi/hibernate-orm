@@ -23,12 +23,11 @@
  *
  */
 package org.hibernate.internal;
+
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.NoSuchElementException;
-
-import org.jboss.logging.Logger;
 
 import org.hibernate.HibernateException;
 import org.hibernate.JDBCException;
@@ -37,6 +36,8 @@ import org.hibernate.event.spi.EventSource;
 import org.hibernate.hql.internal.HolderInstantiator;
 import org.hibernate.type.EntityType;
 import org.hibernate.type.Type;
+
+import org.jboss.logging.Logger;
 
 /**
  * An implementation of <tt>java.util.Iterator</tt> that is
@@ -83,28 +84,17 @@ public final class IteratorImpl implements HibernateIterator {
 
 	public void close() throws JDBCException {
 		if (ps!=null) {
+			LOG.debug("Closing iterator");
+			session.getTransactionCoordinator().getJdbcCoordinator().release( ps );
+			ps = null;
+			rs = null;
+			hasNext = false;
 			try {
-				LOG.debug("Closing iterator");
-				ps.close();
-				ps = null;
-				rs = null;
-				hasNext = false;
+				session.getPersistenceContext().getLoadContexts().cleanup( rs );
 			}
-			catch (SQLException e) {
-                LOG.unableToCloseIterator(e);
-				throw session.getFactory().getSQLExceptionHelper().convert(
-				        e,
-				        "Unable to close iterator"
-					);
-			}
-			finally {
-				try {
-					session.getPersistenceContext().getLoadContexts().cleanup( rs );
-				}
-				catch( Throwable ignore ) {
-					// ignore this error for now
-                    LOG.debugf("Exception trying to cleanup load context : %s", ignore.getMessage());
-				}
+			catch( Throwable ignore ) {
+				// ignore this error for now
+                LOG.debugf("Exception trying to cleanup load context : %s", ignore.getMessage());
 			}
 		}
 	}

@@ -29,17 +29,19 @@ import java.util.LinkedHashSet;
 import java.util.List;
 
 import org.hibernate.service.Service;
+import org.hibernate.service.spi.Stoppable;
 
 /**
- * A service for interacting with class loaders
+ * A service for interacting with class loaders.
  *
  * @author Steve Ebersole
  */
-public interface ClassLoaderService extends Service {
+public interface ClassLoaderService extends Service, Stoppable {
 	/**
-	 * Locate a class by name
+	 * Locate a class by name.
 	 *
 	 * @param className The name of the class to locate
+	 * @param <T> The returned class type.
 	 *
 	 * @return The class reference
 	 *
@@ -48,7 +50,7 @@ public interface ClassLoaderService extends Service {
 	public <T> Class<T> classForName(String className);
 
 	/**
-	 * Locate a resource by name (classpath lookup)
+	 * Locate a resource by name (classpath lookup).
 	 *
 	 * @param name The resource name.
 	 *
@@ -57,7 +59,7 @@ public interface ClassLoaderService extends Service {
 	public URL locateResource(String name);
 
 	/**
-	 * Locate a resource by name (classpath lookup) and gets its stream
+	 * Locate a resource by name (classpath lookup) and gets its stream.
 	 *
 	 * @param name The resource name.
 	 *
@@ -66,7 +68,7 @@ public interface ClassLoaderService extends Service {
 	public InputStream locateResourceStream(String name);
 
 	/**
-	 * Locate a series of resource by name (classpath lookup)
+	 * Locate a series of resource by name (classpath lookup).
 	 *
 	 * @param name The resource name.
 	 *

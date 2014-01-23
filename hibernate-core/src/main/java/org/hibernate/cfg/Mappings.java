@@ -23,7 +23,6 @@
  */
 package org.hibernate.cfg;
 
-import javax.persistence.AttributeConverter;
 import java.io.Serializable;
 import java.util.Iterator;
 import java.util.List;
@@ -37,6 +36,8 @@ import org.hibernate.MappingException;
 import org.hibernate.annotations.AnyMetaDef;
 import org.hibernate.annotations.common.reflection.ReflectionManager;
 import org.hibernate.annotations.common.reflection.XClass;
+import org.hibernate.cfg.annotations.NamedEntityGraphDefinition;
+import org.hibernate.cfg.annotations.NamedProcedureCallDefinition;
 import org.hibernate.engine.ResultSetMappingDefinition;
 import org.hibernate.engine.spi.FilterDefinition;
 import org.hibernate.engine.spi.NamedQueryDefinition;
@@ -337,6 +338,35 @@ public interface Mappings {
 	 * @throws DuplicateMappingException If a query already exists with that name.
 	 */
 	public void addSQLQuery(String name, NamedSQLQueryDefinition query) throws DuplicateMappingException;
+
+	/**
+	 * Adds metadata for a named stored procedure call to this repository.
+	 *
+	 * @param definition The procedure call information
+	 *
+	 * @throws DuplicateMappingException If a query already exists with that name.
+	 */
+	public void addNamedProcedureCallDefinition(NamedProcedureCallDefinition definition) throws DuplicateMappingException;
+
+	/**
+	 * Adds metadata for a named stored procedure call to this repository.
+	 *
+	 * @param definition The procedure call information
+	 *
+	 * @throws DuplicateMappingException If a query already exists with that name.
+	 */
+	public void addDefaultNamedProcedureCallDefinition(NamedProcedureCallDefinition definition) throws DuplicateMappingException;
+
+
+
+	/**
+	 * Adds metadata for a named entity graph to this repository
+	 *
+	 * @param namedEntityGraphDefinition The procedure call information
+	 *
+	 * @throws DuplicateMappingException If an entity graph already exists with that name.
+	 */
+	public void addNamedEntityGraphDefintion(NamedEntityGraphDefinition namedEntityGraphDefinition);
 
 	/**
 	 * Get the metadata for a named SQL result set mapping.
@@ -721,6 +751,8 @@ public interface Mappings {
 
 	public void addUniqueConstraintHolders(Table table, List<UniqueConstraintHolder> uniqueConstraintHolders);
 
+	public void addJpaIndexHolders(Table table, List<JPAIndexHolder> jpaIndexHolders);
+
 	public void addMappedBy(String entityName, String propertyName, String inversePropertyName);
 
 	public String getFromMappedBy(String entityName, String propertyName);
@@ -764,6 +796,35 @@ public interface Mappings {
 	 * @return True if the new generators should be used, false otherwise.
 	 */
 	public boolean useNewGeneratorMappings();
+
+	/**
+	 * Should we handle absent DiscriminatorColumn mappings for joined inheritance by implicitly mapping a
+	 * discriminator column?
+	 *
+	 * @return {@code true} indicates we should infer DiscriminatorColumn implicitly (aka, map to a discriminator
+	 * column even without a DiscriminatorColumn annotation); {@code false} (the default) indicates that we should not.
+	 *
+	 * @see AvailableSettings#IMPLICIT_DISCRIMINATOR_COLUMNS_FOR_JOINED_SUBCLASS
+	 */
+	public boolean useImplicitDiscriminatorColumnForJoinedInheritance();
+
+	/**
+	 * Should we ignore explicit DiscriminatorColumn annotations when combined with joined inheritance?
+	 *
+	 * @return {@code true} indicates we should ignore explicit DiscriminatorColumn annotations; {@code false} (the
+	 * default) indicates we should not ignore them
+	 *
+	 * @see AvailableSettings#IGNORE_EXPLICIT_DISCRIMINATOR_COLUMNS_FOR_JOINED_SUBCLASS
+	 */
+	public boolean ignoreExplicitDiscriminatorColumnForJoinedInheritance();
+
+	/**
+	 * Should we use nationalized variants of character data by default?  This is controlled by the
+	 * {@link AvailableSettings#USE_NATIONALIZED_CHARACTER_DATA} setting.
+	 *
+	 * @return {@code true} if nationalized character data should be used by default; {@code false} otherwise.
+	 */
+	public boolean useNationalizedCharacterData();
 
 	/**
 	 * Return the property annotated with @ToOne and @Id if any.

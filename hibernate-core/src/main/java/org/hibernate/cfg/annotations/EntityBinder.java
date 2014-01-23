@@ -23,18 +23,16 @@
  */
 package org.hibernate.cfg.annotations;
 
-import static org.hibernate.cfg.BinderHelper.toAliasEntityMap;
-import static org.hibernate.cfg.BinderHelper.toAliasTableMap;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-
 import javax.persistence.Access;
 import javax.persistence.Entity;
 import javax.persistence.JoinColumn;
 import javax.persistence.JoinTable;
+import javax.persistence.NamedEntityGraph;
+import javax.persistence.NamedEntityGraphs;
 import javax.persistence.PrimaryKeyJoinColumn;
 import javax.persistence.SecondaryTable;
 import javax.persistence.SecondaryTables;
@@ -84,7 +82,7 @@ import org.hibernate.cfg.ObjectNameNormalizer;
 import org.hibernate.cfg.ObjectNameSource;
 import org.hibernate.cfg.PropertyHolder;
 import org.hibernate.cfg.UniqueConstraintHolder;
-import org.hibernate.engine.internal.Versioning;
+import org.hibernate.engine.OptimisticLockStyle;
 import org.hibernate.engine.spi.ExecuteUpdateResultCheckStyle;
 import org.hibernate.engine.spi.FilterDefinition;
 import org.hibernate.internal.CoreMessageLogger;
@@ -98,7 +96,11 @@ import org.hibernate.mapping.SimpleValue;
 import org.hibernate.mapping.Table;
 import org.hibernate.mapping.TableOwner;
 import org.hibernate.mapping.Value;
+
 import org.jboss.logging.Logger;
+
+import static org.hibernate.cfg.BinderHelper.toAliasEntityMap;
+import static org.hibernate.cfg.BinderHelper.toAliasTableMap;
 
 
 /**
@@ -162,6 +164,7 @@ public class EntityBinder {
 		bindEjb3Annotation( ejb3Ann );
 		bindHibernateAnnotation( hibAnn );
 	}
+
 
 	@SuppressWarnings("SimplifiableConditionalExpression")
 	private void bindHibernateAnnotation(org.hibernate.annotations.Entity hibAnn) {
@@ -289,7 +292,7 @@ public class EntityBinder {
 				LOG.immutableAnnotationOnNonRoot(annotatedClass.getName());
 			}
 		}
-		persistentClass.setOptimisticLockMode( getVersioning( optimisticLockType ) );
+		persistentClass.setOptimisticLockStyle( getVersioning( optimisticLockType ) );
 		persistentClass.setSelectBeforeUpdate( selectBeforeUpdate );
 
 		//set persister if needed
@@ -402,6 +405,25 @@ public class EntityBinder {
 		catch (MappingException me) {
 			throw new AnnotationException( "Use of the same entity name twice: " + name, me );
 		}
+
+		processNamedEntityGraphs();
+	}
+
+	private void processNamedEntityGraphs() {
+		processNamedEntityGraph( annotatedClass.getAnnotation( NamedEntityGraph.class ) );
+		final NamedEntityGraphs graphs = annotatedClass.getAnnotation( NamedEntityGraphs.class );
+		if ( graphs != null ) {
+			for ( NamedEntityGraph graph : graphs.value() ) {
+				processNamedEntityGraph( graph );
+			}
+		}
+	}
+
+	private void processNamedEntityGraph(NamedEntityGraph annotation) {
+		if ( annotation == null ) {
+			return;
+		}
+		mappings.addNamedEntityGraphDefintion( new NamedEntityGraphDefinition( annotation, name, persistentClass.getEntityName() ) );
 	}
 	
 	public void bindDiscriminatorValue() {
@@ -428,16 +450,16 @@ public class EntityBinder {
 		}
 	}
 
-	int getVersioning(OptimisticLockType type) {
+	OptimisticLockStyle getVersioning(OptimisticLockType type) {
 		switch ( type ) {
 			case VERSION:
-				return Versioning.OPTIMISTIC_LOCK_VERSION;
+				return OptimisticLockStyle.VERSION;
 			case NONE:
-				return Versioning.OPTIMISTIC_LOCK_NONE;
+				return OptimisticLockStyle.NONE;
 			case DIRTY:
-				return Versioning.OPTIMISTIC_LOCK_DIRTY;
+				return OptimisticLockStyle.DIRTY;
 			case ALL:
-				return Versioning.OPTIMISTIC_LOCK_ALL;
+				return OptimisticLockStyle.ALL;
 			default:
 				throw new AssertionFailure( "optimistic locking not supported: " + type );
 		}
@@ -786,7 +808,11 @@ public class EntityBinder {
 				null
 		);
 
-		//no check constraints available on joins
+		if ( secondaryTable != null ) {
+			TableBinder.addIndexes( table, secondaryTable.indexes(), mappings );
+		}
+
+			//no check constraints available on joins
 		join.setTable( table );
 
 		//somehow keep joins() for later.
@@ -905,7 +931,10 @@ public class EntityBinder {
 	public void setIgnoreIdAnnotations(boolean ignoreIdAnnotations) {
 		this.ignoreIdAnnotations = ignoreIdAnnotations;
 	}
-
+	public void processComplementaryTableDefinitions(javax.persistence.Table table) {
+		if ( table == null ) return;
+		TableBinder.addIndexes( persistentClass.getTable(), table.indexes(), mappings );
+	}
 	public void processComplementaryTableDefinitions(org.hibernate.annotations.Table table) {
 		//comment and index are processed here
 		if ( table == null ) return;

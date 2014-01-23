@@ -45,11 +45,7 @@ import javax.xml.transform.stream.StreamSource;
 import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
 
-import org.jboss.logging.Logger;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.xml.sax.SAXException;
-
+import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
 import org.hibernate.internal.jaxb.JaxbRoot;
 import org.hibernate.internal.jaxb.Origin;
 import org.hibernate.internal.jaxb.mapping.hbm.JaxbHibernateMapping;
@@ -57,7 +53,12 @@ import org.hibernate.internal.jaxb.mapping.orm.JaxbEntityMappings;
 import org.hibernate.metamodel.MetadataSources;
 import org.hibernate.metamodel.source.MappingException;
 import org.hibernate.metamodel.source.XsdException;
-import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
+
+import org.jboss.logging.Logger;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.xml.sax.SAXException;
 
 /**
  * Helper class for unmarshalling xml configuration using StAX and JAXB.
@@ -216,8 +217,8 @@ public class JaxbHelper {
 	}
 
 	public static final String HBM_SCHEMA_NAME = "org/hibernate/hibernate-mapping-4.0.xsd";
-	public static final String ORM_1_SCHEMA_NAME = "org/hibernate/ejb/orm_1_0.xsd";
-	public static final String ORM_2_SCHEMA_NAME = "org/hibernate/ejb/orm_2_0.xsd";
+	public static final String ORM_1_SCHEMA_NAME = "org/hibernate/jpa/orm_1_0.xsd";
+	public static final String ORM_2_SCHEMA_NAME = "org/hibernate/jpa/orm_2_0.xsd";
 
 	private Schema hbmSchema;
 

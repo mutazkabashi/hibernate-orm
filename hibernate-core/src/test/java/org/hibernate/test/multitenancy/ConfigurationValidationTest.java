@@ -26,8 +26,9 @@ public class ConfigurationValidationTest extends BaseUnitTestCase {
 		cfg.setProperty( Environment.MULTI_TENANT_CONNECTION_PROVIDER, "class.not.present.in.classpath" );
 		cfg.buildMappings();
 		ServiceRegistryImplementor serviceRegistry = (ServiceRegistryImplementor) new StandardServiceRegistryBuilder()
-				.applySettings( cfg.getProperties() ).buildServiceRegistry();
-		cfg.buildSessionFactory( serviceRegistry );
+				.applySettings( cfg.getProperties() ).build();
+		cfg.buildSessionFactory( serviceRegistry ).close();
+		serviceRegistry.destroy();
 	}
 
 	@Test
@@ -48,8 +49,9 @@ public class ConfigurationValidationTest extends BaseUnitTestCase {
 								)
 						)
 				)
-				.buildServiceRegistry();
+				.build();
 
-		cfg.buildSessionFactory( serviceRegistry );
+		cfg.buildSessionFactory( serviceRegistry ).close();
+		serviceRegistry.destroy();
 	}
 }

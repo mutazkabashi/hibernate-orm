@@ -33,11 +33,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.JDBCException;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
+import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
 import org.hibernate.cfg.Configuration;
 import org.hibernate.cfg.Environment;
 import org.hibernate.cfg.NamingStrategy;
@@ -51,7 +50,8 @@ import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.internal.util.ReflectHelper;
 import org.hibernate.internal.util.config.ConfigurationHelper;
 import org.hibernate.service.ServiceRegistry;
-import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
+
+import org.jboss.logging.Logger;
 
 /**
  * A commandline tool to update a database schema. May also be called from inside an application.
@@ -72,9 +72,9 @@ public class SchemaUpdate {
 
 	private Formatter formatter;
 
-	private boolean haltOnError = false;
+	private boolean haltOnError;
 	private boolean format = true;
-	private String outputFile = null;
+	private String outputFile;
 	private String delimiter;
 
 	public SchemaUpdate(Configuration cfg) throws HibernateException {
@@ -110,7 +110,7 @@ public class SchemaUpdate {
 	private static StandardServiceRegistryImpl createServiceRegistry(Properties properties) {
 		Environment.verifyProperties( properties );
 		ConfigurationHelper.resolvePlaceHolders( properties );
-		return (StandardServiceRegistryImpl) new StandardServiceRegistryBuilder().applySettings( properties ).buildServiceRegistry();
+		return (StandardServiceRegistryImpl) new StandardServiceRegistryBuilder().applySettings( properties ).build();
 	}
 
 	public static void main(String[] args) {
@@ -193,7 +193,7 @@ public class SchemaUpdate {
                 LOG.fetchingDatabaseMetadata();
 				connectionHelper.prepare( true );
 				connection = connectionHelper.getConnection();
-				meta = new DatabaseMetadata( connection, dialect );
+				meta = new DatabaseMetadata( connection, dialect, configuration );
 				stmt = connection.createStatement();
 			}
 			catch ( SQLException sqle ) {
@@ -209,9 +209,9 @@ public class SchemaUpdate {
 				outputFileWriter = new FileWriter( outputFile );
 			}
 
-			String[] sqlStrings = configuration.generateSchemaUpdateScript( dialect, meta );
-			for ( String sql : sqlStrings ) {
-				String formatted = formatter.format( sql );
+			List<SchemaUpdateScript> scripts = configuration.generateSchemaUpdateScriptList( dialect, meta );
+			for ( SchemaUpdateScript script : scripts ) {
+				String formatted = formatter.format( script.getScript() );
 				try {
 					if ( delimiter != null ) {
 						formatted += delimiter;
@@ -223,17 +223,19 @@ public class SchemaUpdate {
 						outputFileWriter.write( formatted + "\n" );
 					}
 					if ( target.doExport() ) {
-                        LOG.debug( sql );
+                        LOG.debug( script.getScript() );
 						stmt.executeUpdate( formatted );
 					}
 				}
 				catch ( SQLException e ) {
-					if ( haltOnError ) {
-						throw new JDBCException( "Error during DDL export", e );
+					if (!script.isQuiet()) {
+						if ( haltOnError ) {
+							throw new JDBCException( "Error during DDL export", e );
+						}
+						exceptions.add( e );
+	                    LOG.unsuccessful(script.getScript());
+	                    LOG.error(e.getMessage());
 					}
-					exceptions.add( e );
-                    LOG.unsuccessful(sql);
-                    LOG.error(e.getMessage());
 				}
 			}
 

@@ -22,16 +22,17 @@
  * Boston, MA  02110-1301  USA
  */
 package org.hibernate.engine.jdbc.batch.internal;
+
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Map;
-
-import org.jboss.logging.Logger;
 
 import org.hibernate.HibernateException;
 import org.hibernate.engine.jdbc.batch.spi.BatchKey;
 import org.hibernate.engine.jdbc.spi.JdbcCoordinator;
 import org.hibernate.internal.CoreMessageLogger;
+
+import org.jboss.logging.Logger;
 
 /**
  * A {@link org.hibernate.engine.jdbc.batch.spi.Batch} implementation which does bathing based on a given size.  Once
@@ -40,8 +41,10 @@ import org.hibernate.internal.CoreMessageLogger;
  * @author Steve Ebersole
  */
 public class BatchingBatch extends AbstractBatchImpl {
-
-	private static final CoreMessageLogger LOG = Logger.getMessageLogger( CoreMessageLogger.class, BatchingBatch.class.getName() );
+	private static final CoreMessageLogger LOG = Logger.getMessageLogger(
+			CoreMessageLogger.class,
+			BatchingBatch.class.getName()
+	);
 
 	// IMPL NOTE : Until HHH-5797 is fixed, there will only be 1 statement in a batch
 
@@ -49,6 +52,13 @@ public class BatchingBatch extends AbstractBatchImpl {
 	private int batchPosition;
 	private int statementPosition;
 
+	/**
+	 * Constructs a BatchingBatch
+	 *
+	 * @param key The batch key
+	 * @param jdbcCoordinator The JDBC jdbcCoordinator
+	 * @param batchSize The batch size.
+	 */
 	public BatchingBatch(
 			BatchKey key,
 			JdbcCoordinator jdbcCoordinator,
@@ -107,11 +117,19 @@ public class BatchingBatch extends AbstractBatchImpl {
 			for ( Map.Entry<String,PreparedStatement> entry : getStatements().entrySet() ) {
 				try {
 					final PreparedStatement statement = entry.getValue();
-					checkRowCounts( statement.executeBatch(), statement );
+					final int[] rowCounts;
+					try {
+						transactionContext().startBatchExecution();
+						rowCounts = statement.executeBatch();
+					}
+					finally {
+						transactionContext().endBatchExecution();
+					}
+					checkRowCounts( rowCounts, statement );
 				}
 				catch ( SQLException e ) {
-					LOG.debug( "SQLException escaped proxy", e );
-					throw sqlExceptionHelper().convert( e, "could not perform addBatch", entry.getKey() );
+					abortBatch();
+					throw sqlExceptionHelper().convert( e, "could not execute batch", entry.getKey() );
 				}
 			}
 		}
@@ -125,7 +143,7 @@ public class BatchingBatch extends AbstractBatchImpl {
 	}
 
 	private void checkRowCounts(int[] rowCounts, PreparedStatement ps) throws SQLException, HibernateException {
-		int numberOfRowCounts = rowCounts.length;
+		final int numberOfRowCounts = rowCounts.length;
 		if ( numberOfRowCounts != batchPosition ) {
 			LOG.unexpectedRowCounts();
 		}

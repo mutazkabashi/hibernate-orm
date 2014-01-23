@@ -17,7 +17,9 @@ import org.hibernate.Hibernate;
 import org.hibernate.ScrollableResults;
 import org.hibernate.Session;
 import org.hibernate.Transaction;
+import org.hibernate.dialect.DB2Dialect;
 import org.hibernate.dialect.H2Dialect;
+import org.hibernate.dialect.AbstractHANADialect;
 import org.hibernate.dialect.Oracle8iDialect;
 import org.hibernate.dialect.SQLServerDialect;
 import org.hibernate.engine.spi.SessionImplementor;
@@ -27,7 +29,8 @@ import org.hibernate.testing.junit4.BaseCoreFunctionalTestCase;
 import org.hibernate.transform.DistinctRootEntityResultTransformer;
 import org.junit.Test;
 
-
+@SkipForDialect( value = { Oracle8iDialect.class, AbstractHANADialect.class },
+		comment = "Oracle/HANA do not support the identity column used in the mapping. Extended by NoIdentityHQLScrollFetchTest" )
 public class HQLScrollFetchTest extends BaseCoreFunctionalTestCase {
 	private static final String QUERY = "select p from Parent p join fetch p.children c";
 
@@ -40,7 +43,7 @@ public class HQLScrollFetchTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SkipForDialect( { SQLServerDialect.class,  Oracle8iDialect.class, H2Dialect.class } )
+	@SkipForDialect( { SQLServerDialect.class,  Oracle8iDialect.class, H2Dialect.class, DB2Dialect.class, AbstractHANADialect.class } )
 	public void testScroll() {
 		Session s = openSession();
 		ScrollableResults results = s.createQuery( QUERY ).scroll();
@@ -176,8 +179,8 @@ public class HQLScrollFetchTest extends BaseCoreFunctionalTestCase {
 			}
 		}
 		// check that the same second parent is obtained by calling Session.get()
-		assertSame( pOther, s.get( Parent.class, "parent2" ) );
 		assertNotNull( pOther );
+		assertSame( pOther, s.get( Parent.class, pOther.getId() ) );
 		// access pOther's collection; should be completely loaded
 		assertTrue( Hibernate.isInitialized( pOther.getChildren() ) );
 		assertEquals( childrenOther, pOther.getChildren() );
@@ -342,7 +345,7 @@ public class HQLScrollFetchTest extends BaseCoreFunctionalTestCase {
 		Transaction t = s.beginTransaction();
 		List list = s.createQuery( "from Parent" ).list();
 		for ( Iterator i = list.iterator(); i.hasNext(); ) {
-			s.delete( (Parent) i.next() );
+			s.delete( i.next() );
 		}
 		t.commit();
 		s.close();

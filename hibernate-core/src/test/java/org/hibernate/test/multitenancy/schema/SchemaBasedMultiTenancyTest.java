@@ -44,6 +44,7 @@ import org.hibernate.engine.jdbc.connections.spi.AbstractMultiTenantConnectionPr
 import org.hibernate.engine.jdbc.connections.spi.ConnectionProvider;
 import org.hibernate.engine.jdbc.connections.spi.MultiTenantConnectionProvider;
 import org.hibernate.service.spi.ServiceRegistryImplementor;
+import org.hibernate.testing.RequiresDialectFeature;
 import org.hibernate.testing.cache.CachingRegionFactory;
 import org.hibernate.testing.env.ConnectionProviderBuilder;
 import org.hibernate.testing.junit4.BaseUnitTestCase;
@@ -53,6 +54,7 @@ import org.hibernate.tool.hbm2ddl.SchemaExport;
 /**
  * @author Steve Ebersole
  */
+@RequiresDialectFeature( value = ConnectionProviderBuilder.class )
 public class SchemaBasedMultiTenancyTest extends BaseUnitTestCase {
 	private DriverManagerConnectionProviderImpl acmeProvider;
 	private DriverManagerConnectionProviderImpl jbossProvider;
@@ -69,7 +71,7 @@ public class SchemaBasedMultiTenancyTest extends BaseUnitTestCase {
 		serviceRegistry = (ServiceRegistryImplementor) new StandardServiceRegistryBuilder()
 				.applySettings( cfg.getProperties() )
 				.addService( MultiTenantConnectionProvider.class, multiTenantConnectionProvider )
-				.buildServiceRegistry();
+				.build();
 
 		sessionFactory = (SessionFactoryImplementor) cfg.buildSessionFactory( serviceRegistry );
 	}
@@ -80,6 +82,7 @@ public class SchemaBasedMultiTenancyTest extends BaseUnitTestCase {
 		cfg.setProperty( Environment.CACHE_REGION_FACTORY, CachingRegionFactory.class.getName() );
 		cfg.setProperty( Environment.GENERATE_STATISTICS, "true" );
 		cfg.addAnnotatedClass( Customer.class );
+		cfg.addAnnotatedClass( Invoice.class );
 
 		cfg.buildMappings();
 		RootClass meta = (RootClass) cfg.getClassMapping( Customer.class.getName() );
@@ -291,6 +294,39 @@ public class SchemaBasedMultiTenancyTest extends BaseUnitTestCase {
 		session.delete( john );
 		session.getTransaction().commit();
 		session.close();
+	}
+
+	@Test
+	public void testTableIdentifiers() {
+		Session session = getNewSession( "jboss" );
+		session.beginTransaction();
+		Invoice orderJboss = new Invoice();
+		session.save( orderJboss );
+		Assert.assertEquals( Long.valueOf( 1 ), orderJboss.getId() );
+		session.getTransaction().commit();
+		session.close();
+
+		session = getNewSession( "acme" );
+		session.beginTransaction();
+		Invoice orderAcme = new Invoice();
+		session.save( orderAcme );
+		Assert.assertEquals( Long.valueOf( 1 ), orderAcme.getId() );
+		session.getTransaction().commit();
+		session.close();
+
+		session = getNewSession( "jboss" );
+		session.beginTransaction();
+		session.delete( orderJboss );
+		session.getTransaction().commit();
+		session.close();
+
+		session = getNewSession( "acme" );
+		session.beginTransaction();
+		session.delete( orderAcme );
+		session.getTransaction().commit();
+		session.close();
+
+		sessionFactory.getStatisticsImplementor().clear();
 	}
 
 	protected Session getNewSession(String tenant) {

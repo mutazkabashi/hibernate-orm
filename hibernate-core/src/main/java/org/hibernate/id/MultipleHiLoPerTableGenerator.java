@@ -31,8 +31,6 @@ import java.sql.SQLException;
 import java.sql.Types;
 import java.util.Properties;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.LockMode;
 import org.hibernate.MappingException;
@@ -41,15 +39,18 @@ import org.hibernate.dialect.Dialect;
 import org.hibernate.engine.jdbc.internal.FormatStyle;
 import org.hibernate.engine.jdbc.spi.JdbcServices;
 import org.hibernate.engine.jdbc.spi.SqlStatementLogger;
+import org.hibernate.engine.spi.SessionEventListenerManager;
 import org.hibernate.engine.spi.SessionImplementor;
 import org.hibernate.id.enhanced.AccessCallback;
-import org.hibernate.id.enhanced.OptimizerFactory;
+import org.hibernate.id.enhanced.LegacyHiLoAlgorithmOptimizer;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.internal.util.config.ConfigurationHelper;
 import org.hibernate.jdbc.AbstractReturningWork;
 import org.hibernate.jdbc.WorkExecutorVisitable;
 import org.hibernate.mapping.Table;
 import org.hibernate.type.Type;
+
+import org.jboss.logging.Logger;
 
 /**
  *
@@ -109,7 +110,7 @@ public class MultipleHiLoPerTableGenerator implements PersistentIdentifierGenera
 	public static final String MAX_LO = "max_lo";
 
 	private int maxLo;
-	private OptimizerFactory.LegacyHiLoAlgorithmOptimizer hiloOptimizer;
+	private LegacyHiLoAlgorithmOptimizer hiloOptimizer;
 
 	private Class returnClass;
 	private int keySize;
@@ -128,21 +129,14 @@ public class MultipleHiLoPerTableGenerator implements PersistentIdentifierGenera
 					.append( valueColumnName )
 					.append( ' ' )
 					.append( dialect.getTypeName( Types.INTEGER ) )
-					.append( " ) " )
+					.append( " )" )
+					.append( dialect.getTableTypeString() )
 					.toString()
 		};
 	}
 
 	public String[] sqlDropStrings(Dialect dialect) throws HibernateException {
-		StringBuilder sqlDropString = new StringBuilder( "drop table " );
-		if ( dialect.supportsIfExistsBeforeTableName() ) {
-			sqlDropString.append( "if exists " );
-		}
-		sqlDropString.append( tableName ).append( dialect.getCascadeConstraintsString() );
-		if ( dialect.supportsIfExistsAfterTableName() ) {
-			sqlDropString.append( " if exists" );
-		}
-		return new String[] { sqlDropString.toString() };
+		return new String[] { dialect.getDropTableString( tableName ) };
 	}
 
 	public Object generatorKey() {
@@ -150,29 +144,32 @@ public class MultipleHiLoPerTableGenerator implements PersistentIdentifierGenera
 	}
 
 	public synchronized Serializable generate(final SessionImplementor session, Object obj) {
+		final SqlStatementLogger statementLogger = session.getFactory().getServiceRegistry()
+				.getService( JdbcServices.class )
+				.getSqlStatementLogger();
+		final SessionEventListenerManager statsCollector = session.getEventListenerManager();
+
 		final WorkExecutorVisitable<IntegralDataTypeHolder> work = new AbstractReturningWork<IntegralDataTypeHolder>() {
 			@Override
 			public IntegralDataTypeHolder execute(Connection connection) throws SQLException {
 				IntegralDataTypeHolder value = IdentifierGeneratorHelper.getIntegralDataTypeHolder( returnClass );
-				SqlStatementLogger statementLogger = session
-						.getFactory()
-						.getServiceRegistry()
-						.getService( JdbcServices.class )
-						.getSqlStatementLogger();
+
 				int rows;
 				do {
-					statementLogger.logStatement( query, FormatStyle.BASIC.getFormatter() );
-					PreparedStatement qps = connection.prepareStatement( query );
-					PreparedStatement ips = null;
+					final PreparedStatement queryPreparedStatement = prepareStatement( connection, query, statementLogger, statsCollector );
 					try {
-						ResultSet rs = qps.executeQuery();
+						final ResultSet rs = executeQuery( queryPreparedStatement, statsCollector );
 						boolean isInitialized = rs.next();
 						if ( !isInitialized ) {
 							value.initialize( 0 );
-							statementLogger.logStatement( insert, FormatStyle.BASIC.getFormatter() );
-							ips = connection.prepareStatement( insert );
-							value.bind( ips, 1 );
-							ips.execute();
+							final PreparedStatement insertPreparedStatement = prepareStatement( connection, insert, statementLogger, statsCollector );
+							try {
+								value.bind( insertPreparedStatement, 1 );
+								executeUpdate( insertPreparedStatement, statsCollector );
+							}
+							finally {
+								insertPreparedStatement.close();
+							}
 						}
 						else {
 							value.initialize( rs, 0 );
@@ -184,25 +181,23 @@ public class MultipleHiLoPerTableGenerator implements PersistentIdentifierGenera
 						throw sqle;
 					}
 					finally {
-						if (ips != null) {
-							ips.close();
-						}
-						qps.close();
+						queryPreparedStatement.close();
 					}
 
-					statementLogger.logStatement( update, FormatStyle.BASIC.getFormatter() );
-					PreparedStatement ups = connection.prepareStatement( update );
+
+					final PreparedStatement updatePreparedStatement = prepareStatement( connection, update, statementLogger, statsCollector );
 					try {
-						value.copy().increment().bind( ups, 1 );
-						value.bind( ups, 2 );
-						rows = ups.executeUpdate();
+						value.copy().increment().bind( updatePreparedStatement, 1 );
+						value.bind( updatePreparedStatement, 2 );
+
+						rows = executeUpdate( updatePreparedStatement, statsCollector );
 					}
 					catch (SQLException sqle) {
 						LOG.error( LOG.unableToUpdateHiValue( tableName ), sqle );
 						throw sqle;
 					}
 					finally {
-						ups.close();
+						updatePreparedStatement.close();
 					}
 				} while ( rows==0 );
 
@@ -223,10 +218,54 @@ public class MultipleHiLoPerTableGenerator implements PersistentIdentifierGenera
 		return hiloOptimizer.generate(
 				new AccessCallback() {
 					public IntegralDataTypeHolder getNextValue() {
-						return session.getTransactionCoordinator().getTransaction().createIsolationDelegate().delegateWork( work, true );
+						return session.getTransactionCoordinator().getTransaction().createIsolationDelegate().delegateWork(
+								work,
+								true
+						);
+					}
+
+					@Override
+					public String getTenantIdentifier() {
+						return session.getTenantIdentifier();
 					}
 				}
 		);
+	}
+
+	private PreparedStatement prepareStatement(
+			Connection connection,
+			String sql,
+			SqlStatementLogger statementLogger,
+			SessionEventListenerManager statsCollector) throws SQLException {
+		statementLogger.logStatement( sql, FormatStyle.BASIC.getFormatter() );
+		try {
+			statsCollector.jdbcPrepareStatementStart();
+			return connection.prepareStatement( sql );
+		}
+		finally {
+			statsCollector.jdbcPrepareStatementEnd();
+		}
+	}
+
+	private int executeUpdate(PreparedStatement ps, SessionEventListenerManager statsCollector) throws SQLException {
+		try {
+			statsCollector.jdbcExecuteStatementStart();
+			return ps.executeUpdate();
+		}
+		finally {
+			statsCollector.jdbcExecuteStatementEnd();
+		}
+
+	}
+
+	private ResultSet executeQuery(PreparedStatement ps, SessionEventListenerManager statsCollector) throws SQLException {
+		try {
+			statsCollector.jdbcExecuteStatementStart();
+			return ps.executeQuery();
+		}
+		finally {
+			statsCollector.jdbcExecuteStatementEnd();
+		}
 	}
 
 	public void configure(Type type, Properties params, Dialect dialect) throws MappingException {
@@ -290,7 +329,7 @@ public class MultipleHiLoPerTableGenerator implements PersistentIdentifierGenera
 		returnClass = type.getReturnedClass();
 
 		if ( maxLo >= 1 ) {
-			hiloOptimizer = new OptimizerFactory.LegacyHiLoAlgorithmOptimizer( returnClass, maxLo );
+			hiloOptimizer = new LegacyHiLoAlgorithmOptimizer( returnClass, maxLo );
 		}
 	}
 }

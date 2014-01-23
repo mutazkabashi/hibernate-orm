@@ -24,14 +24,9 @@
 package org.hibernate.cfg.annotations;
 
 import java.io.Serializable;
-import java.lang.reflect.TypeVariable;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Properties;
-
-import javax.persistence.AttributeConverter;
-import javax.persistence.Convert;
-import javax.persistence.Converts;
 import javax.persistence.Enumerated;
 import javax.persistence.Id;
 import javax.persistence.Lob;
@@ -43,11 +38,13 @@ import javax.persistence.TemporalType;
 import org.hibernate.AnnotationException;
 import org.hibernate.AssertionFailure;
 import org.hibernate.MappingException;
+import org.hibernate.annotations.Nationalized;
 import org.hibernate.annotations.Parameter;
 import org.hibernate.annotations.Type;
+import org.hibernate.annotations.common.reflection.ClassLoadingException;
 import org.hibernate.annotations.common.reflection.XClass;
 import org.hibernate.annotations.common.reflection.XProperty;
-import org.hibernate.annotations.common.util.ReflectHelper;
+import org.hibernate.annotations.common.util.StandardClassLoaderDelegateImpl;
 import org.hibernate.cfg.AccessType;
 import org.hibernate.cfg.AttributeConverterDefinition;
 import org.hibernate.cfg.BinderHelper;
@@ -62,12 +59,17 @@ import org.hibernate.internal.util.StringHelper;
 import org.hibernate.mapping.SimpleValue;
 import org.hibernate.mapping.Table;
 import org.hibernate.type.CharacterArrayClobType;
+import org.hibernate.type.CharacterArrayNClobType;
+import org.hibernate.type.CharacterNCharType;
 import org.hibernate.type.EnumType;
 import org.hibernate.type.PrimitiveCharacterArrayClobType;
+import org.hibernate.type.PrimitiveCharacterArrayNClobType;
 import org.hibernate.type.SerializableToBlobType;
 import org.hibernate.type.StandardBasicTypes;
+import org.hibernate.type.StringNVarcharType;
 import org.hibernate.type.WrappedMaterializedBlobType;
 import org.hibernate.usertype.DynamicParameterizedType;
+
 import org.jboss.logging.Logger;
 
 /**
@@ -139,7 +141,7 @@ public class SimpleValueBinder {
 
 	//TODO execute it lazily to be order safe
 
-	public void setType(XProperty property, XClass returnedClass, String declaringClassName) {
+	public void setType(XProperty property, XClass returnedClass, String declaringClassName, AttributeConverterDefinition attributeConverterDefinition) {
 		if ( returnedClass == null ) {
 			// we cannot guess anything
 			return;
@@ -154,6 +156,9 @@ public class SimpleValueBinder {
 		Properties typeParameters = this.typeParameters;
 		typeParameters.clear();
 		String type = BinderHelper.ANNOTATION_STRING_DEFAULT;
+
+		final boolean isNationalized = property.isAnnotationPresent( Nationalized.class )
+				|| mappings.useNationalizedCharacterData();
 
 		Type annType = property.getAnnotation( Type.class );
 		if ( annType != null ) {
@@ -198,21 +203,32 @@ public class SimpleValueBinder {
 			}
 			explicitType = type;
 		}
-		else if ( property.isAnnotationPresent( Lob.class ) ) {
+		else if ( !key && property.isAnnotationPresent( Lob.class ) ) {
 			if ( mappings.getReflectionManager().equals( returnedClassOrElement, java.sql.Clob.class ) ) {
-				type = "clob";
+				type = isNationalized
+						? StandardBasicTypes.NCLOB.getName()
+						: StandardBasicTypes.CLOB.getName();
+			}
+			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, java.sql.NClob.class ) ) {
+				type = StandardBasicTypes.NCLOB.getName();
 			}
 			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, java.sql.Blob.class ) ) {
 				type = "blob";
 			}
 			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, String.class ) ) {
-				type = StandardBasicTypes.MATERIALIZED_CLOB.getName();
+				type = isNationalized
+						? StandardBasicTypes.MATERIALIZED_NCLOB.getName()
+						: StandardBasicTypes.MATERIALIZED_CLOB.getName();
 			}
 			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, Character.class ) && isArray ) {
-				type = CharacterArrayClobType.class.getName();
+				type = isNationalized
+						? CharacterArrayNClobType.class.getName()
+						: CharacterArrayClobType.class.getName();
 			}
 			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, char.class ) && isArray ) {
-				type = PrimitiveCharacterArrayClobType.class.getName();
+				type = isNationalized
+						? PrimitiveCharacterArrayNClobType.class.getName()
+						: PrimitiveCharacterArrayClobType.class.getName();
 			}
 			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, Byte.class ) && isArray ) {
 				type = WrappedMaterializedBlobType.class.getName();
@@ -250,6 +266,24 @@ public class SimpleValueBinder {
 			type = EnumType.class.getName();
 			explicitType = type;
 		}
+		else if ( isNationalized ) {
+			if ( mappings.getReflectionManager().equals( returnedClassOrElement, String.class ) ) {
+				// nvarchar
+				type = StringNVarcharType.INSTANCE.getName();
+				explicitType = type;
+			}
+			else if ( mappings.getReflectionManager().equals( returnedClassOrElement, Character.class ) ) {
+				if ( isArray ) {
+					// nvarchar
+					type = StringNVarcharType.INSTANCE.getName();
+				}
+				else {
+					// nchar
+					type = CharacterNCharType.INSTANCE.getName();
+				}
+				explicitType = type;
+			}
+		}
 
 		// implicit type will check basic types and Serializable classes
 		if ( columns == null ) {
@@ -265,38 +299,42 @@ public class SimpleValueBinder {
 		defaultType = BinderHelper.isEmptyAnnotationValue( type ) ? returnedClassName : type;
 		this.typeParameters = typeParameters;
 
-		applyAttributeConverter( property );
+		applyAttributeConverter( property, attributeConverterDefinition );
 	}
 
-	private void applyAttributeConverter(XProperty property) {
-		final boolean canBeConverted = ! property.isAnnotationPresent( Id.class )
-				&& ! isVersion
-				&& ! isAssociation()
-				&& ! property.isAnnotationPresent( Temporal.class )
-				&& ! property.isAnnotationPresent( Enumerated.class );
-
-		if ( canBeConverted ) {
-			// @Convert annotations take precedence
-			final Convert convertAnnotation = locateConvertAnnotation( property );
-			if ( convertAnnotation != null ) {
-				if ( ! convertAnnotation.disableConversion() ) {
-					attributeConverterDefinition = mappings.locateAttributeConverter( convertAnnotation.converter() );
-				}
-			}
-			else {
-				attributeConverterDefinition = locateAutoApplyAttributeConverter( property );
-			}
+	private void applyAttributeConverter(XProperty property, AttributeConverterDefinition attributeConverterDefinition) {
+		if ( attributeConverterDefinition == null ) {
+			return;
 		}
-	}
 
-	private AttributeConverterDefinition locateAutoApplyAttributeConverter(XProperty property) {
-		final Class propertyType = mappings.getReflectionManager().toClass( property.getType() );
-		for ( AttributeConverterDefinition attributeConverterDefinition : mappings.getAttributeConverters() ) {
-			if ( areTypeMatch( attributeConverterDefinition.getEntityAttributeType(), propertyType ) ) {
-				return attributeConverterDefinition;
-			}
+		LOG.debugf( "Starting applyAttributeConverter [%s:%s]", persistentClassName, property.getName() );
+
+		if ( property.isAnnotationPresent( Id.class ) ) {
+			LOG.debugf( "Skipping AttributeConverter checks for Id attribute [%s]", property.getName() );
+			return;
 		}
-		return null;
+
+		if ( isVersion ) {
+			LOG.debugf( "Skipping AttributeConverter checks for version attribute [%s]", property.getName() );
+			return;
+		}
+
+		if ( property.isAnnotationPresent( Temporal.class ) ) {
+			LOG.debugf( "Skipping AttributeConverter checks for Temporal attribute [%s]", property.getName() );
+			return;
+		}
+
+		if ( property.isAnnotationPresent( Enumerated.class ) ) {
+			LOG.debugf( "Skipping AttributeConverter checks for Enumerated attribute [%s]", property.getName() );
+			return;
+		}
+
+		if ( isAssociation() ) {
+			LOG.debugf( "Skipping AttributeConverter checks for association attribute [%s]", property.getName() );
+			return;
+		}
+
+		this.attributeConverterDefinition = attributeConverterDefinition;
 	}
 
 	private boolean isAssociation() {
@@ -305,162 +343,6 @@ public class SimpleValueBinder {
 		return referencedEntityName != null;
 	}
 
-	@SuppressWarnings("unchecked")
-	private Convert locateConvertAnnotation(XProperty property) {
-		// first look locally on the property for @Convert
-		Convert localConvertAnnotation = property.getAnnotation( Convert.class );
-		if ( localConvertAnnotation != null ) {
-			return localConvertAnnotation;
-		}
-
-		if ( persistentClassName == null ) {
-			LOG.debug( "Persistent Class name not known during attempt to locate @Convert annotations" );
-			return null;
-		}
-
-		final XClass owner;
-		try {
-			final Class ownerClass = ReflectHelper.classForName( persistentClassName );
-			owner = mappings.getReflectionManager().classForName( persistentClassName, ownerClass  );
-		}
-		catch (ClassNotFoundException e) {
-			throw new AnnotationException( "Unable to resolve Class reference during attempt to locate @Convert annotations" );
-		}
-
-		return lookForEntityDefinedConvertAnnotation( property, owner );
-	}
-
-	private Convert lookForEntityDefinedConvertAnnotation(XProperty property, XClass owner) {
-		if ( owner == null ) {
-			// we have hit the root of the entity hierarchy
-			return null;
-		}
-
-		{
-			Convert convertAnnotation = owner.getAnnotation( Convert.class );
-			if ( convertAnnotation != null && isMatch( convertAnnotation, property ) ) {
-				return convertAnnotation;
-			}
-		}
-
-		{
-			Converts convertsAnnotation = owner.getAnnotation( Converts.class );
-			if ( convertsAnnotation != null ) {
-				for ( Convert convertAnnotation : convertsAnnotation.value() ) {
-					if ( isMatch( convertAnnotation, property ) ) {
-						return convertAnnotation;
-					}
-				}
-			}
-		}
-
-		// finally, look on superclass
-		return lookForEntityDefinedConvertAnnotation( property, owner.getSuperclass() );
-	}
-
-	@SuppressWarnings("unchecked")
-	private boolean isMatch(Convert convertAnnotation, XProperty property) {
-		return property.getName().equals( convertAnnotation.attributeName() )
-				&& isTypeMatch( convertAnnotation.converter(), property );
-	}
-
-	private boolean isTypeMatch(Class<? extends AttributeConverter> attributeConverterClass, XProperty property) {
-		return areTypeMatch(
-				extractEntityAttributeType( attributeConverterClass ),
-				mappings.getReflectionManager().toClass( property.getType() )
-		);
-	}
-
-	private Class extractEntityAttributeType(Class<? extends AttributeConverter> attributeConverterClass) {
-		// this is duplicated in SimpleValue...
-		final TypeVariable[] attributeConverterTypeInformation = attributeConverterClass.getTypeParameters();
-		if ( attributeConverterTypeInformation == null || attributeConverterTypeInformation.length < 2 ) {
-			throw new AnnotationException(
-					"AttributeConverter [" + attributeConverterClass.getName()
-							+ "] did not retain parameterized type information"
-			);
-		}
-
-		if ( attributeConverterTypeInformation.length > 2 ) {
-			LOG.debug(
-					"AttributeConverter [" + attributeConverterClass.getName()
-							+ "] specified more than 2 parameterized types"
-			);
-		}
-		final Class entityAttributeJavaType = extractType( attributeConverterTypeInformation[0] );
-		if ( entityAttributeJavaType == null ) {
-			throw new AnnotationException(
-					"Could not determine 'entity attribute' type from given AttributeConverter [" +
-							attributeConverterClass.getName() + "]"
-			);
-		}
-		return entityAttributeJavaType;
-	}
-
-	private Class extractType(TypeVariable typeVariable) {
-		java.lang.reflect.Type[] boundTypes = typeVariable.getBounds();
-		if ( boundTypes == null || boundTypes.length != 1 ) {
-			return null;
-		}
-
-		return (Class) boundTypes[0];
-	}
-
-	private boolean areTypeMatch(Class converterDefinedType, Class propertyType) {
-		if ( converterDefinedType == null ) {
-			throw new AnnotationException( "AttributeConverter defined java type cannot be null" );
-		}
-		if ( propertyType == null ) {
-			throw new AnnotationException( "Property defined java type cannot be null" );
-		}
-
-		return converterDefinedType.equals( propertyType )
-				|| arePrimitiveWrapperEquivalents( converterDefinedType, propertyType );
-	}
-
-	private boolean arePrimitiveWrapperEquivalents(Class converterDefinedType, Class propertyType) {
-		if ( converterDefinedType.isPrimitive() ) {
-			return getWrapperEquivalent( converterDefinedType ).equals( propertyType );
-		}
-		else if ( propertyType.isPrimitive() ) {
-			return getWrapperEquivalent( propertyType ).equals( converterDefinedType );
-		}
-		return false;
-	}
-
-	private static Class getWrapperEquivalent(Class primitive) {
-		if ( ! primitive.isPrimitive() ) {
-			throw new AssertionFailure( "Passed type for which to locate wrapper equivalent was not a primitive" );
-		}
-
-		if ( boolean.class.equals( primitive ) ) {
-			return Boolean.class;
-		}
-		else if ( char.class.equals( primitive ) ) {
-			return Character.class;
-		}
-		else if ( byte.class.equals( primitive ) ) {
-			return Byte.class;
-		}
-		else if ( short.class.equals( primitive ) ) {
-			return Short.class;
-		}
-		else if ( int.class.equals( primitive ) ) {
-			return Integer.class;
-		}
-		else if ( long.class.equals( primitive ) ) {
-			return Long.class;
-		}
-		else if ( float.class.equals( primitive ) ) {
-			return Float.class;
-		}
-		else if ( double.class.equals( primitive ) ) {
-			return Double.class;
-		}
-
-		throw new AssertionFailure( "Unexpected primitive type (VOID most likely) passed to getWrapperEquivalent" );
-	}
-	
 	private TemporalType getTemporalType(XProperty property) {
 		if ( key ) {
 			MapKeyTemporal ann = property.getAnnotation( MapKeyTemporal.class );
@@ -537,7 +419,7 @@ public class SimpleValueBinder {
 	}
 
 	public void fillSimpleValue() {
-		LOG.debugf( "Setting SimpleValue typeName for %s", propertyName );
+		LOG.debugf( "Starting fillSimpleValue for %s", propertyName );
                 
 		if ( attributeConverterDefinition != null ) {
 			if ( ! BinderHelper.isEmptyAnnotationValue( explicitType ) ) {
@@ -550,6 +432,12 @@ public class SimpleValueBinder {
 						)
 				);
 			}
+			LOG.debugf(
+					"Applying JPA AttributeConverter [%s] to [%s:%s]",
+					attributeConverterDefinition,
+					persistentClassName,
+					propertyName
+			);
 			simpleValue.setJpaAttributeConverterDefinition( attributeConverterDefinition );
 		}
 		else {
@@ -600,7 +488,7 @@ public class SimpleValueBinder {
 		if ( simpleValue.getTypeName() != null && simpleValue.getTypeName().length() > 0
 				&& simpleValue.getMappings().getTypeResolver().basic( simpleValue.getTypeName() ) == null ) {
 			try {
-				Class typeClass = ReflectHelper.classForName( simpleValue.getTypeName() );
+				Class typeClass = StandardClassLoaderDelegateImpl.INSTANCE.classForName( simpleValue.getTypeName() );
 
 				if ( typeClass != null && DynamicParameterizedType.class.isAssignableFrom( typeClass ) ) {
 					Properties parameters = simpleValue.getTypeParameters();
@@ -612,13 +500,14 @@ public class SimpleValueBinder {
 					parameters.put( DynamicParameterizedType.IS_PRIMARY_KEY, Boolean.toString( key ) );
 
 					parameters.put( DynamicParameterizedType.ENTITY, persistentClassName );
+					parameters.put( DynamicParameterizedType.XPROPERTY, xproperty );
 					parameters.put( DynamicParameterizedType.PROPERTY, xproperty.getName() );
 					parameters.put( DynamicParameterizedType.ACCESS_TYPE, accessType.getType() );
 					simpleValue.setTypeParameters( parameters );
 				}
 			}
-			catch ( ClassNotFoundException cnfe ) {
-				throw new MappingException( "Could not determine type for: " + simpleValue.getTypeName(), cnfe );
+			catch (ClassLoadingException e) {
+				throw new MappingException( "Could not determine type for: " + simpleValue.getTypeName(), e );
 			}
 		}
 

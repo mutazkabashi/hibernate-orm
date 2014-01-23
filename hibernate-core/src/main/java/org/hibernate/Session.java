@@ -266,7 +266,10 @@ public interface Session extends SharedSessionContract {
 	 * not be synchronized with the database. This operation cascades to associated
 	 * instances if the association is mapped with <tt>cascade="evict"</tt>.
 	 *
-	 * @param object a persistent instance
+	 * @param object The entity to evict
+	 *
+	 * @throws NullPointerException if the passed object is {@code null}
+	 * @throws IllegalArgumentException if the passed object is not defined as an entity
 	 */
 	public void evict(Object object);
 
@@ -562,6 +565,7 @@ public interface Session extends SharedSessionContract {
 	 * with a session (<tt>LockMode.NONE</tt>). This operation cascades to associated
 	 * instances if the association is mapped with <tt>cascade="lock"</tt>.
 	 *
+	 * @param entityName The name of the entity
 	 * @param object a persistent or transient instance
 	 * @param lockMode the lock level
 	 *
@@ -768,7 +772,7 @@ public interface Session extends SharedSessionContract {
 	public Object get(String entityName, Serializable id, LockOptions lockOptions);
 
 	/**
-	 * Return the entity name for a persistent entity
+	 * Return the entity name for a persistent entity.
 	 *   
 	 * @param object a persistent entity
 	 *
@@ -929,6 +933,7 @@ public interface Session extends SharedSessionContract {
 	 * execution returns the result of the {@link ReturningWork#execute} call.
 	 *
 	 * @param work The work to be performed.
+	 * @param <T> The type of the result returned from the work
 	 *
 	 * @return the result from calling {@link ReturningWork#execute}.
 	 *
@@ -1017,7 +1022,15 @@ public interface Session extends SharedSessionContract {
 	 * Contains locking details (LockMode, Timeout and Scope).
 	 */
 	public interface LockRequest {
+		/**
+		 * Constant usable as a time out value that indicates no wait semantics should be used in
+		 * attempting to acquire locks.
+		 */
 		static final int PESSIMISTIC_NO_WAIT = 0;
+		/**
+		 * Constant usable as a time out value that indicates that attempting to acquire locks should be allowed to
+		 * wait forever (apply no timeout).
+		 */
 		static final int PESSIMISTIC_WAIT_FOREVER = -1;
 
 		/**
@@ -1070,8 +1083,26 @@ public interface Session extends SharedSessionContract {
 		 */
 		LockRequest setScope(boolean scope);
 
-		void lock(String entityName, Object object) throws HibernateException;
+		/**
+		 * Perform the requested locking.
+		 *
+		 * @param entityName The name of the entity to lock
+		 * @param object The instance of the entity to lock
+		 */
+		void lock(String entityName, Object object);
 
-		public void lock(Object object) throws HibernateException;
+		/**
+		 * Perform the requested locking.
+		 *
+		 * @param object The instance of the entity to lock
+		 */
+		void lock(Object object);
 	}
+
+	/**
+	 * Add one or more listeners to the Session
+	 *
+	 * @param listeners The listener(s) to add
+	 */
+	public void addEventListeners(SessionEventListener... listeners);
 }

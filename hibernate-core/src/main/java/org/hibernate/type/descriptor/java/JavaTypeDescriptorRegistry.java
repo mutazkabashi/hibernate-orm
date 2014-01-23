@@ -24,12 +24,13 @@
 package org.hibernate.type.descriptor.java;
 
 import java.io.Serializable;
-import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.hibernate.HibernateException;
 import org.hibernate.type.descriptor.WrapperOptions;
+
+import org.jboss.logging.Logger;
 
 /**
  * Basically a map from {@link Class} -> {@link JavaTypeDescriptor}
@@ -37,6 +38,8 @@ import org.hibernate.type.descriptor.WrapperOptions;
  * @author Steve Ebersole
  */
 public class JavaTypeDescriptorRegistry {
+	private static final Logger log = Logger.getLogger( JavaTypeDescriptorRegistry.class );
+
 	public static final JavaTypeDescriptorRegistry INSTANCE = new JavaTypeDescriptorRegistry();
 
 	private ConcurrentHashMap<Class,JavaTypeDescriptor> descriptorsByClass = new ConcurrentHashMap<Class, JavaTypeDescriptor>();
@@ -61,20 +64,20 @@ public class JavaTypeDescriptorRegistry {
 			return descriptor;
 		}
 
+		if ( Serializable.class.isAssignableFrom( cls ) ) {
+			return new SerializableTypeDescriptor( cls );
+		}
+
 		// find the first "assignable" match
 		for ( Map.Entry<Class,JavaTypeDescriptor> entry : descriptorsByClass.entrySet() ) {
-			if ( cls.isAssignableFrom( entry.getKey() ) ) {
+			if ( entry.getKey().isAssignableFrom( cls ) ) {
+				log.debugf( "Using  cached JavaTypeDescriptor instance for Java class [%s]", cls.getName() );
 				return entry.getValue();
 			}
 		}
 
-		// we could not find one; warn the user (as stuff is likely to break later) and create a fallback instance...
-		if ( Serializable.class.isAssignableFrom( cls ) ) {
-			return new SerializableTypeDescriptor( cls );
-		}
-		else {
-			return new FallbackJavaTypeDescriptor<T>( cls );
-		}
+		log.warnf( "Could not find matching type descriptor for requested Java class [%s]; using fallback", cls.getName() );
+		return new FallbackJavaTypeDescriptor<T>( cls );
 	}
 
 	public static class FallbackJavaTypeDescriptor<T> extends AbstractTypeDescriptor<T> {

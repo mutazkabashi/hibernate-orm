@@ -27,17 +27,17 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.MappingException;
+import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
+import org.hibernate.boot.registry.classloading.spi.ClassLoadingException;
 import org.hibernate.jpa.event.spi.jpa.Callback;
 import org.hibernate.jpa.event.spi.jpa.ListenerFactory;
 import org.hibernate.metamodel.binding.EntityBinding;
 import org.hibernate.metamodel.source.MetadataImplementor;
 import org.hibernate.metamodel.source.binder.JpaCallbackClass;
-import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
-import org.hibernate.boot.registry.classloading.spi.ClassLoadingException;
 import org.hibernate.service.spi.SessionFactoryServiceRegistry;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author Steve Ebersole
@@ -132,9 +132,7 @@ public class CallbackProcessorImpl implements CallbackProcessor {
 			if (argType != Object.class && argType != entityClass) {
 				continue;
 			}
-			if (!method.isAccessible()) {
-				method.setAccessible( true );
-			}
+			method.setAccessible( true );
 
 			return new ListenerCallback( listenerInstance, method );
 		}
@@ -151,7 +149,7 @@ public class CallbackProcessorImpl implements CallbackProcessor {
 		for (Method method : callbackClass.getDeclaredMethods()) {
 			if (!method.getName().equals(methodName)) continue;
 			if (method.getParameterTypes().length != 0) continue;
-			if (!method.isAccessible()) method.setAccessible(true);
+			method.setAccessible(true);
 			return new EntityCallback(method);
 		}
 		return null;
@@ -159,6 +157,5 @@ public class CallbackProcessorImpl implements CallbackProcessor {
 
 	@Override
 	public void release() {
-		//To change body of implemented methods use File | Settings | File Templates.
 	}
 }

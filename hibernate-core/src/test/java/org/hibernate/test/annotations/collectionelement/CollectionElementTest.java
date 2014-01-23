@@ -63,8 +63,8 @@ public class CollectionElementTest extends BaseCoreFunctionalTestCase {
 		boy.setLastName( "Doe" );
 		boy.getNickNames().add( "Johnny" );
 		boy.getNickNames().add( "Thing" );
-		boy.getScorePerNickName().put( "Johnny", new Integer( 3 ) );
-		boy.getScorePerNickName().put( "Thing", new Integer( 5 ) );
+		boy.getScorePerNickName().put( "Johnny", Integer.valueOf( 3 ) );
+		boy.getScorePerNickName().put( "Thing", Integer.valueOf( 5 ) );
 		int[] favNbrs = new int[4];
 		for (int index = 0; index < favNbrs.length - 1; index++) {
 			favNbrs[index] = index * 3;
@@ -87,7 +87,7 @@ public class CollectionElementTest extends BaseCoreFunctionalTestCase {
 		assertTrue( boy.getNickNames().contains( "Thing" ) );
 		assertNotNull( boy.getScorePerNickName() );
 		assertTrue( boy.getScorePerNickName().containsKey( "Thing" ) );
-		assertEquals( new Integer( 5 ), boy.getScorePerNickName().get( "Thing" ) );
+		assertEquals( Integer.valueOf( 5 ), boy.getScorePerNickName().get( "Thing" ) );
 		assertNotNull( boy.getFavoriteNumbers() );
 		assertEquals( 3, boy.getFavoriteNumbers()[1] );
 		assertTrue( boy.getCharacters().contains( Character.CRAFTY ) );
@@ -120,6 +120,7 @@ public class CollectionElementTest extends BaseCoreFunctionalTestCase {
 		s.clear();
 		Transaction tx = s.beginTransaction();
 		boy = (Boy) s.get( Boy.class, boy.getId() );
+		assertNotNull( boy );
 		assertNotNull( boy.getFavoriteToys() );
 		assertTrue( boy.getFavoriteToys().contains( toy ) );
 		assertEquals( "@Parent is failing", boy, boy.getFavoriteToys().iterator().next().getOwner() );

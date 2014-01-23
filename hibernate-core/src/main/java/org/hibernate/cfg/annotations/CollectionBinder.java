@@ -23,15 +23,11 @@
  */
 package org.hibernate.cfg.annotations;
 
-import static org.hibernate.cfg.BinderHelper.toAliasEntityMap;
-import static org.hibernate.cfg.BinderHelper.toAliasTableMap;
-
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
-
 import javax.persistence.AttributeOverride;
 import javax.persistence.AttributeOverrides;
 import javax.persistence.ElementCollection;
@@ -72,6 +68,8 @@ import org.hibernate.annotations.SQLDeleteAll;
 import org.hibernate.annotations.SQLInsert;
 import org.hibernate.annotations.SQLUpdate;
 import org.hibernate.annotations.Sort;
+import org.hibernate.annotations.SortComparator;
+import org.hibernate.annotations.SortNatural;
 import org.hibernate.annotations.SortType;
 import org.hibernate.annotations.Where;
 import org.hibernate.annotations.WhereJoinTable;
@@ -82,6 +80,7 @@ import org.hibernate.cfg.AccessType;
 import org.hibernate.cfg.AnnotatedClassType;
 import org.hibernate.cfg.AnnotationBinder;
 import org.hibernate.cfg.BinderHelper;
+import org.hibernate.cfg.CollectionPropertyHolder;
 import org.hibernate.cfg.CollectionSecondPass;
 import org.hibernate.cfg.Ejb3Column;
 import org.hibernate.cfg.Ejb3JoinColumn;
@@ -93,6 +92,7 @@ import org.hibernate.cfg.PropertyHolder;
 import org.hibernate.cfg.PropertyHolderBuilder;
 import org.hibernate.cfg.PropertyInferredData;
 import org.hibernate.cfg.PropertyPreloadedData;
+import org.hibernate.cfg.RecoverableException;
 import org.hibernate.cfg.SecondPass;
 import org.hibernate.engine.spi.ExecuteUpdateResultCheckStyle;
 import org.hibernate.internal.CoreMessageLogger;
@@ -112,7 +112,11 @@ import org.hibernate.mapping.Property;
 import org.hibernate.mapping.SimpleValue;
 import org.hibernate.mapping.Table;
 import org.hibernate.mapping.TypeDef;
+
 import org.jboss.logging.Logger;
+
+import static org.hibernate.cfg.BinderHelper.toAliasEntityMap;
+import static org.hibernate.cfg.BinderHelper.toAliasTableMap;
 
 /**
  * Base class for binding different types of collections to Hibernate configuration objects.
@@ -138,11 +142,6 @@ public abstract class CollectionBinder {
 	String cacheRegionName;
 	private boolean oneToMany;
 	protected IndexColumn indexColumn;
-	private String orderBy;
-	protected String hqlOrderBy;
-	private boolean isSorted;
-	private Class comparator;
-	private boolean hasToBeSorted;
 	protected boolean cascadeDeleteEnabled;
 	protected String mapKeyPropertyName;
 	private boolean insertable = true;
@@ -162,6 +161,13 @@ public abstract class CollectionBinder {
 	private boolean declaringClassSet;
 	private AccessType accessType;
 	private boolean hibernateExtensionMapping;
+
+	private boolean isSortedCollection;
+	private javax.persistence.OrderBy jpaOrderBy;
+	private OrderBy sqlOrderBy;
+	private Sort deprecatedSort;
+	private SortNatural naturalSort;
+	private SortComparator comparatorSort;
 
 	private String explicitType;
 	private Properties explicitTypeParameters = new Properties();
@@ -220,27 +226,24 @@ public abstract class CollectionBinder {
 		this.batchSize = batchSize == null ? -1 : batchSize.size();
 	}
 
-	public void setEjb3OrderBy(javax.persistence.OrderBy orderByAnn) {
-		if ( orderByAnn != null ) {
-			hqlOrderBy = orderByAnn.value();
-		}
+	public void setJpaOrderBy(javax.persistence.OrderBy jpaOrderBy) {
+		this.jpaOrderBy = jpaOrderBy;
 	}
 
-	public void setSqlOrderBy(OrderBy orderByAnn) {
-		if ( orderByAnn != null ) {
-			if ( !BinderHelper.isEmptyAnnotationValue( orderByAnn.clause() ) ) {
-				orderBy = orderByAnn.clause();
-			}
-		}
+	public void setSqlOrderBy(OrderBy sqlOrderBy) {
+		this.sqlOrderBy = sqlOrderBy;
 	}
 
-	public void setSort(Sort sortAnn) {
-		if ( sortAnn != null ) {
-			isSorted = !SortType.UNSORTED.equals( sortAnn.type() );
-			if ( isSorted && SortType.COMPARATOR.equals( sortAnn.type() ) ) {
-				comparator = sortAnn.comparator();
-			}
-		}
+	public void setSort(Sort deprecatedSort) {
+		this.deprecatedSort = deprecatedSort;
+	}
+
+	public void setNaturalSort(SortNatural naturalSort) {
+		this.naturalSort = naturalSort;
+	}
+
+	public void setComparatorSort(SortComparator comparatorSort) {
+		this.comparatorSort = comparatorSort;
 	}
 
 	/**
@@ -252,7 +255,7 @@ public abstract class CollectionBinder {
 			boolean isIndexed,
 			boolean isHibernateExtensionMapping,
 			Mappings mappings) {
-		CollectionBinder result;
+		final CollectionBinder result;
 		if ( property.isArray() ) {
 			if ( property.getElementClass().isPrimitive() ) {
 				result = new PrimitiveArrayBinder();
@@ -269,7 +272,7 @@ public abstract class CollectionBinder {
 					throw new AnnotationException( "Set do not support @CollectionId: "
 							+ StringHelper.qualify( entityName, property.getName() ) );
 				}
-				result = new SetBinder();
+				result = new SetBinder( false );
 			}
 			else if ( java.util.SortedSet.class.equals( returnedClass ) ) {
 				if ( property.isAnnotationPresent( CollectionId.class ) ) {
@@ -283,7 +286,7 @@ public abstract class CollectionBinder {
 					throw new AnnotationException( "Map do not support @CollectionId: "
 							+ StringHelper.qualify( entityName, property.getName() ) );
 				}
-				result = new MapBinder();
+				result = new MapBinder( false );
 			}
 			else if ( java.util.SortedMap.class.equals( returnedClass ) ) {
 				if ( property.isAnnotationPresent( CollectionId.class ) ) {
@@ -351,11 +354,8 @@ public abstract class CollectionBinder {
 		return result;
 	}
 
-	protected CollectionBinder() {
-	}
-
-	protected CollectionBinder(boolean sorted) {
-		this.hasToBeSorted = sorted;
+	protected CollectionBinder(boolean isSortedCollection) {
+		this.isSortedCollection = isSortedCollection;
 	}
 
 	public void setMappedBy(String mappedBy) {
@@ -400,6 +400,7 @@ public abstract class CollectionBinder {
 		LOG.debugf( "Collection role: %s", role );
 		collection.setRole( role );
 		collection.setNodeName( propertyName );
+		collection.setMappedByProperty( mappedBy );
 
 		if ( property.isAnnotationPresent( MapKeyColumn.class )
 			&& mapKeyPropertyName != null ) {
@@ -427,11 +428,6 @@ public abstract class CollectionBinder {
 		//set laziness
 		defineFetchingStrategy();
 		collection.setBatchSize( batchSize );
-		if ( orderBy != null && hqlOrderBy != null ) {
-			throw new AnnotationException(
-					"Cannot use sql order by clause in conjunction of EJB3 order by clause: " + safeCollectionRole()
-			);
-		}
 
 		collection.setMutable( !property.isAnnotationPresent( Immutable.class ) );
 
@@ -449,36 +445,7 @@ public abstract class CollectionBinder {
 			collection.setCollectionPersisterClass( persisterAnn.impl() );
 		}
 
-		// set ordering
-		if ( orderBy != null ) collection.setOrderBy( orderBy );
-		if ( isSorted ) {
-			collection.setSorted( true );
-			if ( comparator != null ) {
-				try {
-					collection.setComparator( (Comparator) comparator.newInstance() );
-				}
-				catch (ClassCastException e) {
-					throw new AnnotationException(
-							"Comparator not implementing java.util.Comparator class: "
-									+ comparator.getName() + "(" + safeCollectionRole() + ")"
-					);
-				}
-				catch (Exception e) {
-					throw new AnnotationException(
-							"Could not instantiate comparator class: "
-									+ comparator.getName() + "(" + safeCollectionRole() + ")"
-					);
-				}
-			}
-		}
-		else {
-			if ( hasToBeSorted ) {
-				throw new AnnotationException(
-						"A sorted collection has to define @Sort: "
-								+ safeCollectionRole()
-				);
-			}
-		}
+		applySortingAndOrdering( collection );
 
 		//set cache
 		if ( StringHelper.isNotEmpty( cacheConcurrencyStrategy ) ) {
@@ -575,6 +542,99 @@ public abstract class CollectionBinder {
 		//we don't care about the join stuffs because the column is on the association table.
 		if (! declaringClassSet) throw new AssertionFailure( "DeclaringClass is not set in CollectionBinder while binding" );
 		propertyHolder.addProperty( prop, declaringClass );
+	}
+
+	private void applySortingAndOrdering(Collection collection) {
+		boolean isSorted = isSortedCollection;
+
+		boolean hadOrderBy = false;
+		boolean hadExplicitSort = false;
+
+		Class<? extends Comparator> comparatorClass = null;
+
+		if ( jpaOrderBy == null && sqlOrderBy == null ) {
+			if ( deprecatedSort != null ) {
+				LOG.debug( "Encountered deprecated @Sort annotation; use @SortNatural or @SortComparator instead." );
+				if ( naturalSort != null || comparatorSort != null ) {
+					throw buildIllegalSortCombination();
+				}
+				hadExplicitSort = deprecatedSort.type() != SortType.UNSORTED;
+				if ( deprecatedSort.type() == SortType.NATURAL ) {
+					isSorted = true;
+				}
+				else if ( deprecatedSort.type() == SortType.COMPARATOR ) {
+					isSorted = true;
+					comparatorClass = deprecatedSort.comparator();
+				}
+			}
+			else if ( naturalSort != null ) {
+				if ( comparatorSort != null ) {
+					throw buildIllegalSortCombination();
+				}
+				hadExplicitSort = true;
+			}
+			else if ( comparatorSort != null ) {
+				hadExplicitSort = true;
+				comparatorClass = comparatorSort.value();
+			}
+		}
+		else {
+			if ( jpaOrderBy != null && sqlOrderBy != null ) {
+				throw new AnnotationException(
+						String.format(
+								"Illegal combination of @%s and @%s on %s",
+								javax.persistence.OrderBy.class.getName(),
+								OrderBy.class.getName(),
+								safeCollectionRole()
+						)
+				);
+			}
+
+			hadOrderBy = true;
+			hadExplicitSort = false;
+
+			// we can only apply the sql-based order by up front.  The jpa order by has to wait for second pass
+			if ( sqlOrderBy != null ) {
+				collection.setOrderBy( sqlOrderBy.clause() );
+			}
+		}
+
+		if ( isSortedCollection ) {
+			if ( ! hadExplicitSort && !hadOrderBy ) {
+				throw new AnnotationException(
+						"A sorted collection must define and ordering or sorting : " + safeCollectionRole()
+				);
+			}
+		}
+
+		collection.setSorted( isSortedCollection || hadExplicitSort );
+
+		if ( comparatorClass != null ) {
+			try {
+				collection.setComparator( comparatorClass.newInstance() );
+			}
+			catch (Exception e) {
+				throw new AnnotationException(
+						String.format(
+								"Could not instantiate comparator class [%s] for %s",
+								comparatorClass.getName(),
+								safeCollectionRole()
+						)
+				);
+			}
+		}
+	}
+
+	private AnnotationException buildIllegalSortCombination() {
+		return new AnnotationException(
+				String.format(
+						"Illegal combination of annotations on %s.  Only one of @%s, @%s and @%s can be used",
+						safeCollectionRole(),
+						Sort.class.getName(),
+						SortNatural.class.getName(),
+						SortComparator.class.getName()
+				)
+		);
 	}
 
 	private void defineFetchingStrategy() {
@@ -722,7 +782,7 @@ public abstract class CollectionBinder {
 					fkJoinColumns,
 					collType,
 					cascadeDeleteEnabled,
-					ignoreNotFound, hqlOrderBy,
+					ignoreNotFound,
 					mappings,
 					inheritanceStatePerClass
 			);
@@ -739,7 +799,10 @@ public abstract class CollectionBinder {
 					isEmbedded, collType,
 					ignoreNotFound, unique,
 					cascadeDeleteEnabled,
-					associationTableBinder, property, propertyHolder, hqlOrderBy, mappings
+					associationTableBinder,
+					property,
+					propertyHolder,
+					mappings
 			);
 			return false;
 		}
@@ -752,10 +815,11 @@ public abstract class CollectionBinder {
 			XClass collectionType,
 			boolean cascadeDeleteEnabled,
 			boolean ignoreNotFound,
-			String hqlOrderBy,
 			Mappings mappings,
 			Map<XClass, InheritanceState> inheritanceStatePerClass) {
-		if ( LOG.isDebugEnabled() ) {
+
+		final boolean debugEnabled = LOG.isDebugEnabled();
+		if ( debugEnabled ) {
 			LOG.debugf( "Binding a OneToMany: %s.%s through a foreign key", propertyHolder.getEntityName(), propertyName );
 		}
 		org.hibernate.mapping.OneToMany oneToMany = new org.hibernate.mapping.OneToMany( mappings, collection.getOwner() );
@@ -765,8 +829,17 @@ public abstract class CollectionBinder {
 
 		String assocClass = oneToMany.getReferencedEntityName();
 		PersistentClass associatedClass = (PersistentClass) persistentClasses.get( assocClass );
-		String orderBy = buildOrderByClauseFromHql( hqlOrderBy, associatedClass, collection.getRole() );
-		if ( orderBy != null ) collection.setOrderBy( orderBy );
+		if ( jpaOrderBy != null ) {
+			final String orderByFragment = buildOrderByClauseFromHql(
+					jpaOrderBy.value(),
+					associatedClass,
+					collection.getRole()
+			);
+			if ( StringHelper.isNotEmpty( orderByFragment ) ) {
+				collection.setOrderBy( orderByFragment );
+			}
+		}
+
 		if ( mappings == null ) {
 			throw new AssertionFailure(
 					"CollectionSecondPass for oneToMany should not be called with null mappings"
@@ -784,7 +857,7 @@ public abstract class CollectionBinder {
 			column.setJoins( joins );
 			collection.setCollectionTable( column.getTable() );
 		}
-		if ( LOG.isDebugEnabled() ) {
+		if ( debugEnabled ) {
 			LOG.debugf( "Mapping collection: %s -> %s", collection.getRole(), collection.getCollectionTable().getName() );
 		}
 		bindFilters( false );
@@ -795,7 +868,7 @@ public abstract class CollectionBinder {
 			String entityName = oneToMany.getReferencedEntityName();
 			PersistentClass referenced = mappings.getClass( entityName );
 			Backref prop = new Backref();
-			prop.setName( '_' + fkJoinColumns[0].getPropertyName() + "Backref" );
+			prop.setName( '_' + fkJoinColumns[0].getPropertyName() + '_' + fkJoinColumns[0].getLogicalColumnName() + "Backref" );
 			prop.setUpdateable( false );
 			prop.setSelectable( false );
 			prop.setCollectionRole( collection.getRole() );
@@ -1037,10 +1110,14 @@ public abstract class CollectionBinder {
 			TableBinder associationTableBinder,
 			XProperty property,
 			PropertyHolder parentPropertyHolder,
-			String hqlOrderBy,
 			Mappings mappings) throws MappingException {
+		if ( property == null ) {
+			throw new IllegalArgumentException( "null was passed for argument property" );
+		}
 
-		PersistentClass collectionEntity = (PersistentClass) persistentClasses.get( collType.getName() );
+		final PersistentClass collectionEntity = (PersistentClass) persistentClasses.get( collType.getName() );
+		final String hqlOrderBy = extractHqlOrderBy( jpaOrderBy );
+
 		boolean isCollectionOfEntities = collectionEntity != null;
 		ManyToAny anyAnn = property.getAnnotation( ManyToAny.class );
         if (LOG.isDebugEnabled()) {
@@ -1162,15 +1239,17 @@ public abstract class CollectionBinder {
 			element.setFetchMode( FetchMode.JOIN );
 			element.setLazy( false );
 			element.setIgnoreNotFound( ignoreNotFound );
-			// as per 11.1.38 of JPA-2 spec, default to primary key if no column is specified by @OrderBy.
+			// as per 11.1.38 of JPA 2.0 spec, default to primary key if no column is specified by @OrderBy.
 			if ( hqlOrderBy != null ) {
 				collValue.setManyToManyOrdering(
 						buildOrderByClauseFromHql( hqlOrderBy, collectionEntity, collValue.getRole() )
 				);
 			}
-			ForeignKey fk = property != null ? property.getAnnotation( ForeignKey.class ) : null;
+			final ForeignKey fk = property.getAnnotation( ForeignKey.class );
 			String fkName = fk != null ? fk.inverseName() : "";
-			if ( !BinderHelper.isEmptyAnnotationValue( fkName ) ) element.setForeignKeyName( fkName );
+			if ( !BinderHelper.isEmptyAnnotationValue( fkName ) ) {
+				element.setForeignKeyName( fkName );
+			}
 		}
 		else if ( anyAnn != null ) {
 			//@ManyToAny
@@ -1189,10 +1268,19 @@ public abstract class CollectionBinder {
 			XClass elementClass;
 			AnnotatedClassType classType;
 
-			PropertyHolder holder = null;
+			CollectionPropertyHolder holder = null;
 			if ( BinderHelper.PRIMITIVE_NAMES.contains( collType.getName() ) ) {
 				classType = AnnotatedClassType.NONE;
 				elementClass = null;
+
+				holder = PropertyHolderBuilder.buildPropertyHolder(
+						collValue,
+						collValue.getRole(),
+						null,
+						property,
+						parentPropertyHolder,
+						mappings
+				);
 			}
 			else {
 				elementClass = collType;
@@ -1202,11 +1290,20 @@ public abstract class CollectionBinder {
 						collValue,
 						collValue.getRole(),
 						elementClass,
-						property, parentPropertyHolder, mappings
+						property,
+						parentPropertyHolder,
+						mappings
 				);
+
+				// 'parentPropertyHolder' is the PropertyHolder for the owner of the collection
+				// 'holder' is the CollectionPropertyHolder.
+				// 'property' is the collection XProperty
+				parentPropertyHolder.startingProperty( property );
+
 				//force in case of attribute override
 				boolean attributeOverride = property.isAnnotationPresent( AttributeOverride.class )
 						|| property.isAnnotationPresent( AttributeOverrides.class );
+				// todo : force in the case of Convert annotation(s) with embedded paths (beyond key/value prefixes)?
 				if ( isEmbedded || attributeOverride ) {
 					classType = AnnotatedClassType.EMBEDDABLE;
 				}
@@ -1249,10 +1346,18 @@ public abstract class CollectionBinder {
 					}
 				}
 				//TODO be smart with isNullable
+				boolean isNullable = true;
 				Component component = AnnotationBinder.fillComponent(
-						holder, inferredData, isPropertyAnnotated ? AccessType.PROPERTY : AccessType.FIELD, true,
-						entityBinder, false, false,
-						true, mappings, inheritanceStatePerClass
+						holder,
+						inferredData,
+						isPropertyAnnotated ? AccessType.PROPERTY : AccessType.FIELD,
+						isNullable,
+						entityBinder,
+						false,
+						false,
+						true,
+						mappings,
+						inheritanceStatePerClass
 				);
 
 				collValue.setElement( component );
@@ -1266,6 +1371,8 @@ public abstract class CollectionBinder {
 				}
 			}
 			else {
+				holder.prepare( property );
+
 				SimpleValueBinder elementBinder = new SimpleValueBinder();
 				elementBinder.setMappings( mappings );
 				elementBinder.setReturnedClassName( collType.getName() );
@@ -1288,7 +1395,12 @@ public abstract class CollectionBinder {
 					column.setTable( collValue.getCollectionTable() );
 				}
 				elementBinder.setColumns( elementColumns );
-				elementBinder.setType( property, elementClass, collValue.getOwnerEntityName() );
+				elementBinder.setType(
+						property,
+						elementClass,
+						collValue.getOwnerEntityName(),
+						holder.resolveElementAttributeConverterDefinition( elementClass )
+				);
 				elementBinder.setPersistentClassName( propertyHolder.getEntityName() );
 				elementBinder.setAccessType( accessType );
 				collValue.setElement( elementBinder.make() );
@@ -1306,6 +1418,13 @@ public abstract class CollectionBinder {
 			bindManytoManyInverseFk( collectionEntity, inverseJoinColumns, element, unique, mappings );
 		}
 
+	}
+
+	private String extractHqlOrderBy(javax.persistence.OrderBy jpaOrderBy) {
+		if ( jpaOrderBy != null ) {
+			return jpaOrderBy.value(); // Null not possible. In case of empty expression, apply default ordering.
+		}
+		return null; // @OrderBy not found.
 	}
 
 	private static void checkFilterConditions(Collection collValue) {
@@ -1328,9 +1447,14 @@ public abstract class CollectionBinder {
 			boolean cascadeDeleteEnabled,
 			XProperty property,
 			Mappings mappings) {
-		BinderHelper.createSyntheticPropertyReference(
-				joinColumns, collValue.getOwner(), collectionEntity, collValue, false, mappings
-		);
+		try {
+			BinderHelper.createSyntheticPropertyReference(
+					joinColumns, collValue.getOwner(), collectionEntity, collValue, false, mappings
+			);
+		}
+		catch (AnnotationException ex) {
+			throw new AnnotationException( "Unable to map collection " + collectionEntity.getClassName() + "." + property.getName(), ex );
+		}
 		SimpleValue key = buildCollectionKey( collValue, joinColumns, cascadeDeleteEnabled, property, mappings );
 		if ( property.isAnnotationPresent( ElementCollection.class ) && joinColumns.length > 0 ) {
 			joinColumns[0].setJPA2ElementCollection( true );
@@ -1398,6 +1522,7 @@ public abstract class CollectionBinder {
 				( (ManyToOne) value ).setReferencedPropertyName( referencedPropertyName );
 				mappings.addUniquePropertyReference( referencedEntity.getEntityName(), referencedPropertyName );
 			}
+			( (ManyToOne) value ).setReferenceToPrimaryKey( referencedPropertyName == null );
 			value.createForeignKey();
 		}
 		else {

@@ -23,6 +23,8 @@
  */
 package org.hibernate.internal.util.xml;
 
+import org.hibernate.internal.util.ClassLoaderHelper;
+
 import org.dom4j.DocumentFactory;
 import org.dom4j.Element;
 import org.dom4j.io.DOMReader;
@@ -81,7 +83,7 @@ public final class XMLHelper {
 
 	public static DocumentFactory getDocumentFactory() {
 
-		ClassLoader cl = Thread.currentThread().getContextClassLoader();
+		ClassLoader cl = ClassLoaderHelper.getContextClassLoader();
 		DocumentFactory factory;
 		try {
 			Thread.currentThread().setContextClassLoader( XMLHelper.class.getClassLoader() );

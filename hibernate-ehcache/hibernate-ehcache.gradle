@@ -4,3 +4,15 @@ dependencies {
 
     testCompile project( ':hibernate-testing' )
 }
+
+def pomName() {
+    return 'Hibernate/Ehcache Integration'
+}
+
+def pomDescription() {
+    return 'Integration for Ehcache into Hibernate as a second-level caching service'
+}
+
+def osgiDescription() {
+	return pomDescription()
+}

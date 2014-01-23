@@ -23,10 +23,12 @@
  *
  */
 package org.hibernate.persister.collection;
+
 import java.io.Serializable;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Iterator;
+import java.util.Set;
 
 import org.hibernate.HibernateException;
 import org.hibernate.MappingException;
@@ -44,7 +46,7 @@ import org.hibernate.internal.StaticFilterAliasGenerator;
 import org.hibernate.internal.util.collections.ArrayHelper;
 import org.hibernate.jdbc.Expectation;
 import org.hibernate.jdbc.Expectations;
-import org.hibernate.loader.collection.BatchingCollectionInitializer;
+import org.hibernate.loader.collection.BatchingCollectionInitializerBuilder;
 import org.hibernate.loader.collection.CollectionInitializer;
 import org.hibernate.loader.collection.SubselectCollectionLoader;
 import org.hibernate.mapping.Collection;
@@ -150,6 +152,12 @@ public class BasicCollectionPersister extends AbstractCollectionPersister {
 		}
 		
 		return update.toStatementString();
+	}
+	
+	@Override
+	protected void doProcessQueuedOps(PersistentCollection collection, Serializable id, SessionImplementor session)
+			throws HibernateException {
+		// nothing to do
 	}
 
 	/**
@@ -261,7 +269,7 @@ public class BasicCollectionPersister extends AbstractCollectionPersister {
 									.addToBatch();
 						}
 						else {
-							expectation.verifyOutcome( st.executeUpdate(), st, -1 );
+							expectation.verifyOutcome( session.getTransactionCoordinator().getJdbcCoordinator().getResultSetReturn().executeUpdate( st ), st, -1 );
 						}
 					}
 					catch ( SQLException sqle ) {
@@ -272,7 +280,7 @@ public class BasicCollectionPersister extends AbstractCollectionPersister {
 					}
 					finally {
 						if ( !useBatch ) {
-							st.close();
+							session.getTransactionCoordinator().getJdbcCoordinator().release( st );
 						}
 					}
 					count++;
@@ -284,7 +292,7 @@ public class BasicCollectionPersister extends AbstractCollectionPersister {
 		catch ( SQLException sqle ) {
 			throw getSQLExceptionHelper().convert(
 					sqle,
-					"could not update collection rows: " + MessageHelper.collectionInfoString( this, id, getFactory() ),
+					"could not update collection rows: " + MessageHelper.collectionInfoString( this, collection, id, session ),
 					getSQLUpdateRowString()
 				);
 		}
@@ -332,14 +340,27 @@ public class BasicCollectionPersister extends AbstractCollectionPersister {
 	@Override
     protected CollectionInitializer createCollectionInitializer(LoadQueryInfluencers loadQueryInfluencers)
 			throws MappingException {
-		return BatchingCollectionInitializer.createBatchingCollectionInitializer( this, batchSize, getFactory(), loadQueryInfluencers );
+		return BatchingCollectionInitializerBuilder.getBuilder( getFactory() )
+				.createBatchingCollectionInitializer( this, batchSize, getFactory(), loadQueryInfluencers );
 	}
 
+	@Override
 	public String fromJoinFragment(String alias, boolean innerJoin, boolean includeSubclasses) {
 		return "";
 	}
 
+	@Override
+	public String fromJoinFragment(String alias, boolean innerJoin, boolean includeSubclasses, Set<String> treatAsDeclarations) {
+		return "";
+	}
+
+	@Override
 	public String whereJoinFragment(String alias, boolean innerJoin, boolean includeSubclasses) {
+		return "";
+	}
+
+	@Override
+	public String whereJoinFragment(String alias, boolean innerJoin, boolean includeSubclasses, Set<String> treatAsDeclarations) {
 		return "";
 	}
 

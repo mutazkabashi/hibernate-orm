@@ -25,14 +25,15 @@ package org.hibernate.engine.transaction.jta.platform.internal;
 
 import java.util.Map;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.boot.registry.StandardServiceInitiator;
 import org.hibernate.boot.registry.selector.spi.StrategySelector;
 import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.engine.transaction.jta.platform.spi.JtaPlatform;
+import org.hibernate.engine.transaction.jta.platform.spi.JtaPlatformResolver;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.service.spi.ServiceRegistryImplementor;
+
+import org.jboss.logging.Logger;
 
 /**
  * Standard initiator for the standard {@link org.hibernate.engine.transaction.jta.platform.spi.JtaPlatform}
@@ -55,8 +56,8 @@ public class JtaPlatformInitiator implements StandardServiceInitiator<JtaPlatfor
 		final Object setting = configurationValues.get( AvailableSettings.JTA_PLATFORM );
 		final JtaPlatform platform = registry.getService( StrategySelector.class ).resolveStrategy( JtaPlatform.class, setting );
 		if ( platform == null ) {
-			LOG.debugf( " No JtaPlatform was specified, using default [%s]", NoJtaPlatform.class.getName() );
-			return new NoJtaPlatform();
+			LOG.debugf( "No JtaPlatform was specified, checking resolver" );
+			return registry.getService( JtaPlatformResolver.class ).resolveJtaPlatform( configurationValues, registry );
 		}
 		return platform;
 	}

@@ -30,13 +30,13 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.type.descriptor.JdbcTypeNameMapper;
 import org.hibernate.type.descriptor.ValueBinder;
 import org.hibernate.type.descriptor.ValueExtractor;
 import org.hibernate.type.descriptor.WrapperOptions;
 import org.hibernate.type.descriptor.java.JavaTypeDescriptor;
+
+import org.jboss.logging.Logger;
 
 /**
  * Basically a map from JDBC type code (int) -> {@link SqlTypeDescriptor}
@@ -50,12 +50,10 @@ public class SqlTypeDescriptorRegistry {
 
 	private ConcurrentHashMap<Integer,SqlTypeDescriptor> descriptorMap = new ConcurrentHashMap<Integer, SqlTypeDescriptor>();
 
-	@SuppressWarnings("UnnecessaryBoxing")
 	public void addDescriptor(SqlTypeDescriptor sqlTypeDescriptor) {
-		descriptorMap.put( Integer.valueOf( sqlTypeDescriptor.getSqlType() ), sqlTypeDescriptor );
+		descriptorMap.put( sqlTypeDescriptor.getSqlType(), sqlTypeDescriptor );
 	}
 
-	@SuppressWarnings("UnnecessaryBoxing")
 	public SqlTypeDescriptor getDescriptor(int jdbcTypeCode) {
 		SqlTypeDescriptor descriptor = descriptorMap.get( Integer.valueOf( jdbcTypeCode ) );
 		if ( descriptor != null ) {

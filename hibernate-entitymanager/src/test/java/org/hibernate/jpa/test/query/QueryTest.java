@@ -23,10 +23,15 @@
  */
 package org.hibernate.jpa.test.query;
 
+import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.List;
+import java.util.Map;
 import javax.persistence.EntityManager;
+import javax.persistence.Parameter;
 import javax.persistence.Query;
 import javax.persistence.TemporalType;
 import javax.persistence.Tuple;
@@ -34,13 +39,19 @@ import javax.persistence.Tuple;
 import org.junit.Test;
 
 import org.hibernate.Hibernate;
+import org.hibernate.cfg.AvailableSettings;
+import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.jpa.test.BaseEntityManagerFunctionalTestCase;
 import org.hibernate.jpa.test.Distributor;
 import org.hibernate.jpa.test.Item;
 import org.hibernate.jpa.test.Wallet;
+import org.hibernate.stat.Statistics;
+
+import junit.framework.Assert;
 
 import org.hibernate.testing.TestForIssue;
 
+import static junit.framework.Assert.assertNull;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -51,6 +62,24 @@ import static org.junit.Assert.fail;
  * @author Steve Ebersole
  */
 public class QueryTest extends BaseEntityManagerFunctionalTestCase {
+	@Override
+	public Class[] getAnnotatedClasses() {
+		return new Class[] {
+				Item.class,
+				Distributor.class,
+				Wallet.class,
+				Employee.class,
+				Contractor.class
+		};
+	}
+
+	@Override
+	@SuppressWarnings("unchecked")
+	protected void addConfigOptions(Map options) {
+		super.addConfigOptions( options );
+		options.put( AvailableSettings.GENERATE_STATISTICS, "true" );
+	}
+
 	@Test
 	@TestForIssue( jiraKey = "HHH-7192" )
 	public void testTypedManipulationQueryError() {
@@ -107,19 +136,71 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		em.close();
 	}
 
+	@Test
 	public void testTypeExpression() throws Exception {
+		final EntityManager em = getOrCreateEntityManager();
+		em.getTransaction().begin();
+		final Employee employee = new Employee( "Lukasz", 100.0 );
+		em.persist( employee );
+		final Contractor contractor = new Contractor( "Kinga", 100.0, "Microsoft" );
+		em.persist( contractor );
+		final Query q = em.createQuery( "SELECT e FROM Employee e where TYPE(e) <> Contractor" );
+		final List result = q.getResultList();
+		assertNotNull( result );
+		assertEquals( Arrays.asList( employee ), result );
+		em.getTransaction().rollback();
+		em.close();
+	}
+
+	@Test
+	@TestForIssue( jiraKey = "HHH_7407" )
+	public void testMultipleParameterLists() throws Exception {
+		final Item item = new Item( "Mouse", "Micro$oft mouse" );
+		final Item item2 = new Item( "Computer", "Dell computer" );
+
 		EntityManager em = getOrCreateEntityManager();
 		em.getTransaction().begin();
-		Item item = new Item( "Mouse", "Micro$oft mouse" );
 		em.persist( item );
-		item = new Item( "Computer", "Apple II" );
-		em.persist( item );
-		Query q = em.createQuery( "select i from Item i where TYPE(i) = :itemType" );
-		q.setParameter( "itemType", Item.class );
+		em.persist( item2 );
+		assertTrue( em.contains( item ) );
+		em.getTransaction().commit();
+
+		List<String> names = Arrays.asList( item.getName() );
+		Query q = em.createQuery( "select item from Item item where item.name in :names or item.name in :names2" );
+		q.setParameter( "names", names );
+		q.setParameter( "names2", names );
 		List result = q.getResultList();
 		assertNotNull( result );
-		assertEquals( 2, result.size() );
-		em.getTransaction().rollback();
+		assertEquals( 1, result.size() );
+
+		List<String> descrs = Arrays.asList( item.getDescr() );
+		q = em.createQuery( "select item from Item item where item.name in :names and ( item.descr is null or item.descr in :descrs )" );
+		q.setParameter( "names", names );
+		q.setParameter( "descrs", descrs );
+		result = q.getResultList();
+		assertNotNull( result );
+		assertEquals( 1, result.size() );
+
+		em.getTransaction().begin();
+		em.remove( em.getReference( Item.class, item.getName() ) );
+		em.remove( em.getReference( Item.class, item2.getName() ) );
+		em.getTransaction().commit();
+
+		em.close();
+	}
+
+	@Test
+	public void testJpaPositionalParameters() {
+		EntityManager em = getOrCreateEntityManager();
+		em.getTransaction().begin();
+
+		Query query = em.createQuery( "from Item item where item.name =?1 or item.descr = ?1" );
+		Parameter p1 = query.getParameter( 1 );
+		Assert.assertNotNull( p1 );
+		Assert.assertNotNull( p1.getPosition() );
+		Assert.assertNull( p1.getName() );
+
+		em.getTransaction().commit();
 		em.close();
 	}
 
@@ -161,6 +242,7 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		params = new ArrayList();
 		params.add( item.getName() );
 		params.add( item2.getName() );
+		// deprecated usage of positional parameter by String
 		q.setParameter( "1", params );
 		result = q.getResultList();
 		assertNotNull( result );
@@ -213,6 +295,7 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		params = new ArrayList();
 		params.add( item.getName() );
 		params.add( item2.getName() );
+		// deprecated usage of positional parameter by String
 		q.setParameter( "1", params );
 		result = q.getResultList();
 		assertNotNull( result );
@@ -258,8 +341,13 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		assertTrue( em.contains( item ) );
 		em.getTransaction().commit();
 
+		Statistics stats = em.getEntityManagerFactory().unwrap( SessionFactoryImplementor.class ).getStatistics();
+		stats.clear();
+		assertEquals( 0, stats.getFlushCount() );
+
 		em.getTransaction().begin();
 		item = (Item) em.createNativeQuery( "select * from Item", Item.class ).getSingleResult();
+		assertEquals( 1, stats.getFlushCount() );
 		assertNotNull( item );
 		assertEquals( "Micro$oft mouse", item.getDescr() );
 		em.remove( item );
@@ -318,6 +406,24 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 	}
 
 	@Test
+	public void testTemporalTypeBinding() {
+		EntityManager em = getOrCreateEntityManager();
+		em.getTransaction().begin();
+
+		Query query = em.createQuery( "select w from " + Wallet.class.getName() + " w where w.marketEntrance = :me" );
+		Parameter parameter = query.getParameter( "me", Date.class );
+		assertEquals( parameter.getParameterType(), Date.class );
+
+		query.setParameter( "me", new Date() );
+		query.setParameter( "me", new Date(), TemporalType.DATE );
+		query.setParameter( "me", new GregorianCalendar(), TemporalType.DATE );
+
+		em.getTransaction().commit();
+		em.close();
+
+	}
+
+	@Test
 	public void testPositionalParameterForms() throws Exception {
 		EntityManager em = getOrCreateEntityManager();
 		em.getTransaction().begin();
@@ -337,6 +443,7 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 
 		// next using jpa-style positional parameter, but as a name (which is how Hibernate core treats these
 		query = em.createQuery( "select w from Wallet w where w.brand = ?1" );
+		// deprecated usage of positional parameter by String
 		query.setParameter( "1", "Lacoste" );
 		w = (Wallet) query.getSingleResult();
 		assertNotNull( w );
@@ -364,12 +471,11 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		em.flush();
 
 
+		Query query = em.createQuery( "select w from Wallet w where w.brand = ?1 and w.model = ?3" );
+		query.setParameter( 1, "Lacoste" );
 		try {
-			Query query = em.createQuery( "select w from Wallet w where w.brand = ?1 and w.model = ?3" );
-			query.setParameter( 1, "Lacoste" );
 			query.setParameter( 2, "Expensive" );
-			query.getResultList();
-			fail("The query should fail due to a user error in parameters");
+			fail( "Should fail due to a user error in parameters" );
 		}
 		catch ( IllegalArgumentException e ) {
 			//success
@@ -531,13 +637,18 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		catch (IllegalArgumentException e) {
 			//success
 		}
-		em.getTransaction().commit();
+		assertTrue(
+				"thrown IllegalArgumentException should of caused transaction to be marked for rollback only",
+				true == em.getTransaction().getRollbackOnly()
+		);
+		em.getTransaction().rollback();		// HHH-8442 changed to rollback since thrown ISE causes
+											// transaction to be marked for rollback only.
+											// No need to remove entity since it was rolled back.
 
-		em.clear();
-
-		em.getTransaction().begin();
-		em.remove( em.find( Item.class, item.getName() ) );
-		em.getTransaction().commit();
+		assertNull(
+				"entity should not of been saved to database since IllegalArgumentException should of" +
+						"caused transaction to be marked for rollback only", em.find( Item.class, item.getName() )
+		);
 		em.close();
 
 	}
@@ -591,14 +702,5 @@ public class QueryTest extends BaseEntityManagerFunctionalTestCase {
 		em.getTransaction().commit();
 
 		em.close();
-	}
-
-	@Override
-	public Class[] getAnnotatedClasses() {
-		return new Class[]{
-				Item.class,
-				Distributor.class,
-				Wallet.class
-		};
 	}
 }

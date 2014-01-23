@@ -34,11 +34,11 @@ import java.io.ObjectStreamClass;
 import java.io.OutputStream;
 import java.io.Serializable;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.Hibernate;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.type.SerializationException;
+
+import org.jboss.logging.Logger;
 
 /**
  * <p>Assists with the serialization process and performs additional functionality based
@@ -191,7 +191,7 @@ public final class SerializationHelper {
 	 * @return The current TCCL
 	 */
 	public static ClassLoader defaultClassLoader() {
-		return Thread.currentThread().getContextClassLoader();
+		return ClassLoaderHelper.getContextClassLoader();
 	}
 
 	public static ClassLoader hibernateClassLoader() {

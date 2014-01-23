@@ -1,40 +1,66 @@
-apply plugin: org.hibernate.build.gradle.testing.matrix.MatrixTestingPlugin
+apply plugin: 'hibernate-matrix-testing'
+
+configurations {
+    hibernateJpaModelGenTool {
+        description = "Dependencies for running the Hibernate JPA Metamodel Generator AnnotationProcessor tool"
+    }
+}
 
 dependencies {
     compile( project( ':hibernate-core' ) )
     compile( project( ':hibernate-entitymanager' ) )
+
     provided( [group: 'org.hibernate', name: 'hibernate-tools', version: '3.2.0.ga'] )
     provided( libraries.ant )
+
     testCompile( project(':hibernate-testing') )
     testCompile( project(path: ':hibernate-entitymanager', configuration: 'tests') )
+
     testRuntime( libraries.javassist )
+
+    hibernateJpaModelGenTool( project( ':hibernate-jpamodelgen' ) )
+}
+
+def pomName() {
+    return 'Entity versioning support'
+}
+
+def pomDescription() {
+    return 'Entity versioning support'
+}
+
+def osgiDescription() {
+	return pomDescription()
 }
 
 sourceSets {
-    main {
-        ext.generatedJpaMetamodelSrcDir = file( "${buildDir}/generated-src/jpamodelgen/${name}" )
+    test {
+        ext {
+            enversDemoJavaDir = file( "src/demo/java" )
+            enversDemoResourcesDir = file( "src/demo/resources" )
+        }
         java {
-            srcDir generatedJpaMetamodelSrcDir
+            srcDir enversDemoJavaDir
+        }
+        resources {
+            srcDir enversDemoResourcesDir
         }
     }
 }
 
-// Generate JPA2 static metamodel for default revision entities
-task generateJpaMetamodelClasses(type: Compile) {
-    classpath = compileJava.classpath + configurations.hibernateJpaModelGenTool
-    source = sourceSets.main.originalJavaSrcDirs
-    destinationDir = file( "${buildDir}/tmp/apt" )
-    options.define(
-            compilerArgs: [
-                    "-proc:only",
-                    "-processor", "org.hibernate.jpamodelgen.JPAMetaModelEntityProcessor",
-                    "-s", "$sourceSets.main.generatedJpaMetamodelSrcDir.absolutePath"
-            ]
-    );
-    outputs.dir sourceSets.main.generatedJpaMetamodelSrcDir;
-    doFirst {
-        sourceSets.main.generatedJpaMetamodelSrcDir.mkdirs()
+addMetaGenProcessor( sourceSets.main )
+
+jar {
+    manifest {
+        instructionFirst 'Import-Package',
+            // TODO: Shouldn't have to explicitly list the JPA packages, but
+            // the plugin generates them with [1.0,2) versions.
+            'javax.persistence;version="2.1.0"',
+            'javax.persistence.criteria;version="2.1.0"',
+            'javax.persistence.metamodel;version="2.1.0"',
+            'javax.persistence.spi;version="2.1.0"',
+            // optionals
+            'javax.naming;resolution:=optional',
+            'org.apache.tools.ant;resolution:=optional'
     }
 }
-compileJava.dependsOn generateJpaMetamodelClasses
-

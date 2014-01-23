@@ -29,14 +29,13 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.LockMode;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.engine.jdbc.internal.FormatStyle;
 import org.hibernate.engine.jdbc.spi.JdbcServices;
 import org.hibernate.engine.jdbc.spi.SqlStatementLogger;
+import org.hibernate.engine.spi.SessionEventListenerManager;
 import org.hibernate.engine.spi.SessionImplementor;
 import org.hibernate.id.IdentifierGenerationException;
 import org.hibernate.id.IdentifierGeneratorHelper;
@@ -44,14 +43,18 @@ import org.hibernate.id.IntegralDataTypeHolder;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.jdbc.AbstractReturningWork;
 
+import org.jboss.logging.Logger;
+
 /**
  * Describes a table used to mimic sequence behavior
  *
  * @author Steve Ebersole
  */
 public class TableStructure implements DatabaseStructure {
-
-    private static final CoreMessageLogger LOG = Logger.getMessageLogger(CoreMessageLogger.class, TableStructure.class.getName());
+	private static final CoreMessageLogger LOG = Logger.getMessageLogger(
+			CoreMessageLogger.class,
+			TableStructure.class.getName()
+	);
 
 	private final String tableName;
 	private final String valueColumnName;
@@ -111,8 +114,17 @@ public class TableStructure implements DatabaseStructure {
 		applyIncrementSizeToSourceValues = optimizer.applyIncrementSizeToSourceValues();
 	}
 
+	private IntegralDataTypeHolder makeValue() {
+		return IdentifierGeneratorHelper.getIntegralDataTypeHolder( numberType );
+	}
+
 	@Override
 	public AccessCallback buildCallback(final SessionImplementor session) {
+		final SqlStatementLogger statementLogger = session.getFactory().getServiceRegistry()
+				.getService( JdbcServices.class )
+				.getSqlStatementLogger();
+		final SessionEventListenerManager statsCollector = session.getEventListenerManager();
+
 		return new AccessCallback() {
 			@Override
 			public IntegralDataTypeHolder getNextValue() {
@@ -120,27 +132,21 @@ public class TableStructure implements DatabaseStructure {
 						new AbstractReturningWork<IntegralDataTypeHolder>() {
 							@Override
 							public IntegralDataTypeHolder execute(Connection connection) throws SQLException {
-								final SqlStatementLogger statementLogger = session
-										.getFactory()
-										.getServiceRegistry()
-										.getService( JdbcServices.class )
-										.getSqlStatementLogger();
-								IntegralDataTypeHolder value = IdentifierGeneratorHelper.getIntegralDataTypeHolder( numberType );
+								final IntegralDataTypeHolder value = makeValue();
 								int rows;
 								do {
-									statementLogger.logStatement( selectQuery, FormatStyle.BASIC.getFormatter() );
-									PreparedStatement selectStatement = connection.prepareStatement( selectQuery );
+									final PreparedStatement selectStatement = prepareStatement( connection, selectQuery, statementLogger, statsCollector );
 									try {
-										ResultSet selectRS = selectStatement.executeQuery();
+										final ResultSet selectRS = executeQuery( selectStatement, statsCollector );
 										if ( !selectRS.next() ) {
-											String err = "could not read a hi value - you need to populate the table: " + tableName;
+											final String err = "could not read a hi value - you need to populate the table: " + tableName;
 											LOG.error( err );
 											throw new IdentifierGenerationException( err );
 										}
 										value.initialize( selectRS, 1 );
 										selectRS.close();
 									}
-									catch ( SQLException sqle ) {
+									catch (SQLException sqle) {
 										LOG.error( "could not read a hi value", sqle );
 										throw sqle;
 									}
@@ -148,17 +154,17 @@ public class TableStructure implements DatabaseStructure {
 										selectStatement.close();
 									}
 
-									statementLogger.logStatement( updateQuery, FormatStyle.BASIC.getFormatter() );
-									PreparedStatement updatePS = connection.prepareStatement( updateQuery );
+
+									final PreparedStatement updatePS = prepareStatement( connection, updateQuery, statementLogger, statsCollector );
 									try {
 										final int increment = applyIncrementSizeToSourceValues ? incrementSize : 1;
 										final IntegralDataTypeHolder updateValue = value.copy().add( increment );
 										updateValue.bind( updatePS, 1 );
 										value.bind( updatePS, 2 );
-										rows = updatePS.executeUpdate();
+										rows = executeUpdate( updatePS, statsCollector );
 									}
-									catch ( SQLException e ) {
-									    LOG.unableToUpdateQueryHiValue(tableName, e);
+									catch (SQLException e) {
+										LOG.unableToUpdateQueryHiValue( tableName, e );
 										throw e;
 									}
 									finally {
@@ -174,7 +180,48 @@ public class TableStructure implements DatabaseStructure {
 						true
 				);
 			}
+
+			@Override
+			public String getTenantIdentifier() {
+				return session.getTenantIdentifier();
+			}
 		};
+	}
+
+	private PreparedStatement prepareStatement(
+			Connection connection,
+			String sql,
+			SqlStatementLogger statementLogger,
+			SessionEventListenerManager statsCollector) throws SQLException {
+		statementLogger.logStatement( sql, FormatStyle.BASIC.getFormatter() );
+		try {
+			statsCollector.jdbcPrepareStatementStart();
+			return connection.prepareStatement( sql );
+		}
+		finally {
+			statsCollector.jdbcPrepareStatementEnd();
+		}
+	}
+
+	private int executeUpdate(PreparedStatement ps, SessionEventListenerManager statsCollector) throws SQLException {
+		try {
+			statsCollector.jdbcExecuteStatementStart();
+			return ps.executeUpdate();
+		}
+		finally {
+			statsCollector.jdbcExecuteStatementEnd();
+		}
+
+	}
+
+	private ResultSet executeQuery(PreparedStatement ps, SessionEventListenerManager statsCollector) throws SQLException {
+		try {
+			statsCollector.jdbcExecuteStatementStart();
+			return ps.executeQuery();
+		}
+		finally {
+			statsCollector.jdbcExecuteStatementEnd();
+		}
 	}
 
 	@Override
@@ -187,15 +234,7 @@ public class TableStructure implements DatabaseStructure {
 
 	@Override
 	public String[] sqlDropStrings(Dialect dialect) throws HibernateException {
-		StringBuilder sqlDropString = new StringBuilder().append( "drop table " );
-		if ( dialect.supportsIfExistsBeforeTableName() ) {
-			sqlDropString.append( "if exists " );
-		}
-		sqlDropString.append( tableName ).append( dialect.getCascadeConstraintsString() );
-		if ( dialect.supportsIfExistsAfterTableName() ) {
-			sqlDropString.append( " if exists" );
-		}
-		return new String[] { sqlDropString.toString() };
+		return new String[] { dialect.getDropTableString( tableName ) };
 	}
 
 	@Override

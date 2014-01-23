@@ -23,17 +23,23 @@
  */
 package org.hibernate.test.querycache;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.Test;
-
+import org.hibernate.Criteria;
 import org.hibernate.Hibernate;
+import org.hibernate.Query;
+import org.hibernate.SQLQuery;
 import org.hibernate.Session;
 import org.hibernate.Transaction;
 import org.hibernate.cfg.Configuration;
 import org.hibernate.cfg.Environment;
+import org.hibernate.criterion.Restrictions;
 import org.hibernate.stat.EntityStatistics;
 import org.hibernate.stat.QueryStatistics;
 import org.hibernate.testing.DialectChecks;
@@ -41,17 +47,29 @@ import org.hibernate.testing.RequiresDialectFeature;
 import org.hibernate.testing.TestForIssue;
 import org.hibernate.testing.junit4.BaseCoreFunctionalTestCase;
 import org.hibernate.transform.Transformers;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import org.junit.Test;
 
 /**
  * @author Gavin King
+ * @author Brett Meyer
  */
 public class QueryCacheTest extends BaseCoreFunctionalTestCase {
+
+	private static final CompositeKey PK = new CompositeKey(1, 2);
+	
 	@Override
 	public String[] getMappings() {
 		return new String[] { "querycache/Item.hbm.xml" };
+	}
+
+	@Override
+	protected Class[] getAnnotatedClasses() {
+		return new Class[] { 
+				CompositeKey.class,
+				EntityWithCompositeKey.class,
+				StringCompositeKey.class,
+				EntityWithStringCompositeKey.class				
+		};
 	}
 
 	@Override
@@ -264,6 +282,7 @@ public class QueryCacheTest extends BaseCoreFunctionalTestCase {
 		sessionFactory().evictQueries();
 		sessionFactory().getStatistics().clear();
 
+		// persist our 2 items.  This saves them to the db, but also into the second level entity cache region
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
 		Item i = new Item();
@@ -283,18 +302,24 @@ public class QueryCacheTest extends BaseCoreFunctionalTestCase {
 
 		Thread.sleep(200);
 
+		// perform the cacheable query.  this will execute the query (no query cache hit), but the Items will be
+		// found in second level entity cache region
 		s = openSession();
 		t = s.beginTransaction();
-		List result = s.createQuery( queryString ).setCacheable(true).list();
+		List result = s.createQuery( queryString ).setCacheable( true ).list();
 		assertEquals( result.size(), 2 );
 		t.commit();
 		s.close();
-
 		assertEquals( qs.getCacheHitCount(), 0 );
 		assertEquals( s.getSessionFactory().getStatistics().getEntityFetchCount(), 0 );
 
+
+		// evict the Items from the second level entity cache region
 		sessionFactory().evict(Item.class);
 
+		// now, perform the cacheable query again.  this time we should not execute the query (query cache hit).
+		// However, the Items will not be found in second level entity cache region this time (we evicted them above)
+		// nor are they in associated with the session.
 		s = openSession();
 		t = s.beginTransaction();
 		result = s.createQuery( queryString ).setCacheable(true).list();
@@ -431,6 +456,96 @@ public class QueryCacheTest extends BaseCoreFunctionalTestCase {
 		assertEquals( qs.getExecutionCount(), 3 );
 		assertEquals( es.getFetchCount(), 0 ); //check that it was being cached
 	}
+	
+	@Test
+	@TestForIssue( jiraKey = "HHH-4459" )
+	public void testGetByCompositeId() {
+		Session s = openSession();
+		s.beginTransaction();
+		s.persist( new EntityWithCompositeKey( PK ) );
+		Query query = s.createQuery( "FROM EntityWithCompositeKey e WHERE e.pk = :pk" );
+		query.setCacheable( true );
+		query.setParameter( "pk", PK );
+		assertEquals(1, query.list().size( ));
+		s.getTransaction().rollback();
+		s.close();
+		
+		s = openSession();
+		s.beginTransaction();
+		EntityWithStringCompositeKey entity = new EntityWithStringCompositeKey();
+		StringCompositeKey key = new StringCompositeKey();
+		key.setAnalog( "foo1" );
+		key.setDevice( "foo2" );
+		key.setDeviceType( "foo3" );
+		key.setSubstation( "foo4" );
+		entity.setPk( key );
+		s.persist( entity );
+		Criteria c = s.createCriteria(
+				EntityWithStringCompositeKey.class ).add( Restrictions.eq( 
+						"pk", key ) );
+		c.setCacheable( true );
+		assertEquals( 1, c.list().size() );
+		s.getTransaction().rollback();
+		s.close();
+	}
+
+	@Test
+	@TestForIssue( jiraKey = "HHH-3051" )
+	public void testScalarSQLQuery() {
+		sessionFactory().getCache().evictQueryRegions();
+		sessionFactory().getStatistics().clear();
+
+		Session s = openSession();
+		s.beginTransaction();
+		Item item = new Item();
+		item.setName("fooName");
+		item.setDescription("fooDescription");
+		s.persist(item);
+		s.getTransaction().commit();
+		s.close();
+
+		s = openSession();
+		s.beginTransaction();
+		
+		// Note: StandardQueryCache#put handles single results and multiple results differently.  So, test both
+		// 1 and 2+ scalars.
+		
+        String sqlQuery = "select name, description from Items";
+        SQLQuery query = s.createSQLQuery(sqlQuery);
+        query.setCacheable(true);
+        query.addScalar("name");
+        query.addScalar("description");
+        Object[] result1 = (Object[]) query.uniqueResult();
+        assertNotNull( result1 );
+        assertEquals( result1.length, 2 );
+        assertEquals( result1[0], "fooName" );
+        assertEquals( result1[1], "fooDescription" );
+		
+        sqlQuery = "select name from Items";
+        query = s.createSQLQuery(sqlQuery);
+        query.setCacheable(true);
+        query.addScalar("name");
+        String result2 = (String) query.uniqueResult();
+        assertNotNull( result2 );
+        assertEquals( result2, "fooName" );
+        
+        s.getTransaction().commit();
+        s.close();
+	}
+
+//	@Test
+//	public void testGetByCompositeIdNoCache() {
+//		Query query = em.createQuery("FROM EntityWithCompositeKey e WHERE e.pk = :pk");
+//		query.setParameter("pk", PK);
+//		assertEquals(1, query.getResultList().size());
+//	}
+//
+//	@Test
+//	public void testGetByEntityIself() {
+//		Query query = em.createQuery("FROM EntityWithCompositeKey e WHERE e = :ent");
+//		query.setParameter("ent", new EntityWithCompositeKey(PK));
+//		assertEquals(1, query.getResultList().size());
+//	}
 
 }
 

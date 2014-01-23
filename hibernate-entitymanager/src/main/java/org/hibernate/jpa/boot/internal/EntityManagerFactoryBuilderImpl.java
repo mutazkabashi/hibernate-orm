@@ -23,22 +23,11 @@
  */
 package org.hibernate.jpa.boot.internal;
 
-import javax.persistence.AttributeConverter;
-import javax.persistence.Converter;
-import javax.persistence.Embeddable;
-import javax.persistence.Entity;
-import javax.persistence.EntityManagerFactory;
-import javax.persistence.EntityNotFoundException;
-import javax.persistence.MappedSuperclass;
-import javax.persistence.PersistenceException;
-import javax.persistence.spi.PersistenceUnitTransactionType;
-import javax.sql.DataSource;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Serializable;
-import java.lang.annotation.Annotation;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -51,60 +40,78 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.StringTokenizer;
-
-import org.jboss.jandex.AnnotationInstance;
-import org.jboss.jandex.ClassInfo;
-import org.jboss.jandex.CompositeIndex;
-import org.jboss.jandex.DotName;
-import org.jboss.jandex.Index;
-import org.jboss.jandex.IndexView;
-import org.jboss.jandex.Indexer;
-
-import org.jboss.logging.Logger;
+import javax.persistence.AttributeConverter;
+import javax.persistence.EntityManagerFactory;
+import javax.persistence.EntityNotFoundException;
+import javax.persistence.PersistenceException;
+import javax.persistence.spi.PersistenceUnitTransactionType;
+import javax.sql.DataSource;
 
 import org.hibernate.Interceptor;
+import org.hibernate.InvalidMappingException;
 import org.hibernate.MappingException;
 import org.hibernate.MappingNotFoundException;
 import org.hibernate.SessionFactory;
 import org.hibernate.SessionFactoryObserver;
+import org.hibernate.boot.registry.BootstrapServiceRegistry;
 import org.hibernate.boot.registry.BootstrapServiceRegistryBuilder;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
+import org.hibernate.boot.registry.classloading.internal.ClassLoaderServiceImpl;
+import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
+import org.hibernate.boot.registry.selector.StrategyRegistrationProvider;
 import org.hibernate.boot.registry.selector.spi.StrategySelector;
 import org.hibernate.cfg.Configuration;
 import org.hibernate.cfg.Environment;
 import org.hibernate.cfg.NamingStrategy;
 import org.hibernate.cfg.beanvalidation.BeanValidationIntegrator;
-import org.hibernate.id.factory.spi.MutableIdentifierGeneratorFactory;
-import org.hibernate.jpa.AvailableSettings;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.engine.transaction.internal.jdbc.JdbcTransactionFactory;
 import org.hibernate.engine.transaction.internal.jta.CMTTransactionFactory;
+import org.hibernate.id.factory.spi.MutableIdentifierGeneratorFactory;
 import org.hibernate.integrator.spi.Integrator;
 import org.hibernate.internal.jaxb.cfg.JaxbHibernateConfiguration;
 import org.hibernate.internal.util.StringHelper;
 import org.hibernate.internal.util.ValueHolder;
+import org.hibernate.jpa.AvailableSettings;
+import org.hibernate.jpa.boot.scan.internal.StandardScanOptions;
+import org.hibernate.jpa.boot.scan.internal.StandardScanner;
+import org.hibernate.jpa.boot.scan.spi.ScanOptions;
+import org.hibernate.jpa.boot.scan.spi.ScanResult;
+import org.hibernate.jpa.boot.scan.spi.Scanner;
+import org.hibernate.jpa.boot.spi.ClassDescriptor;
 import org.hibernate.jpa.boot.spi.EntityManagerFactoryBuilder;
+import org.hibernate.jpa.boot.spi.InputStreamAccess;
 import org.hibernate.jpa.boot.spi.IntegratorProvider;
+import org.hibernate.jpa.boot.spi.MappingFileDescriptor;
+import org.hibernate.jpa.boot.spi.NamedInputStream;
+import org.hibernate.jpa.boot.spi.PackageDescriptor;
 import org.hibernate.jpa.boot.spi.PersistenceUnitDescriptor;
+import org.hibernate.jpa.boot.spi.StrategyRegistrationProviderList;
+import org.hibernate.jpa.boot.spi.TypeContributorList;
+import org.hibernate.jpa.event.spi.JpaIntegrator;
 import org.hibernate.jpa.internal.EntityManagerFactoryImpl;
 import org.hibernate.jpa.internal.EntityManagerMessageLogger;
-import org.hibernate.jpa.event.spi.JpaIntegrator;
+import org.hibernate.jpa.internal.schemagen.JpaSchemaGenerator;
 import org.hibernate.jpa.internal.util.LogHelper;
 import org.hibernate.jpa.internal.util.PersistenceUnitTransactionTypeHelper;
-import org.hibernate.jpa.packaging.internal.NativeScanner;
-import org.hibernate.jpa.packaging.spi.NamedInputStream;
-import org.hibernate.jpa.packaging.spi.Scanner;
 import org.hibernate.jpa.spi.IdentifierGeneratorStrategyProvider;
 import org.hibernate.metamodel.source.annotations.JPADotNames;
 import org.hibernate.metamodel.source.annotations.JandexHelper;
+import org.hibernate.metamodel.spi.TypeContributor;
 import org.hibernate.proxy.EntityNotFoundDelegate;
-import org.hibernate.secure.internal.JACCConfiguration;
-import org.hibernate.boot.registry.BootstrapServiceRegistry;
+import org.hibernate.secure.spi.GrantedPermission;
+import org.hibernate.secure.spi.JaccService;
 import org.hibernate.service.ConfigLoader;
 import org.hibernate.service.ServiceRegistry;
-import org.hibernate.boot.registry.classloading.internal.ClassLoaderServiceImpl;
-import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
 import org.hibernate.service.spi.ServiceRegistryImplementor;
+
+import org.jboss.jandex.AnnotationInstance;
+import org.jboss.jandex.ClassInfo;
+import org.jboss.jandex.DotName;
+import org.jboss.jandex.Index;
+import org.jboss.jandex.IndexView;
+import org.jboss.jandex.Indexer;
+import org.jboss.logging.Logger;
 
 /**
  * @author Steve Ebersole
@@ -125,6 +132,16 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	 * Names a {@link IntegratorProvider}
 	 */
 	public static final String INTEGRATOR_PROVIDER = "hibernate.integrator_provider";
+	
+	/**
+	 * Names a {@link StrategyRegistrationProviderList}
+	 */
+	public static final String STRATEGY_REGISTRATION_PROVIDERS = "hibernate.strategy_registration_provider";
+	
+	/**
+	 * Names a {@link TypeContributorList}
+	 */
+	public static final String TYPE_CONTRIBUTORS = "hibernate.type_contributors";
 
 	/**
 	 * Names a Jandex {@link Index} instance to use.
@@ -144,7 +161,7 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	private final StandardServiceRegistryBuilder serviceRegistryBuilder;
 	private final Map configurationValues;
 
-	private final List<JaccDefinition> jaccDefinitions = new ArrayList<JaccDefinition>();
+	private final List<GrantedPermission> grantedJaccPermissions = new ArrayList<GrantedPermission>();
 	private final List<CacheRegionDefinition> cacheRegionDefinitions = new ArrayList<CacheRegionDefinition>();
 	// todo : would much prefer this as a local variable...
 	private final List<JaxbHibernateConfiguration.JaxbSessionFactory.JaxbMapping> cfgXmlNamedMappings = new ArrayList<JaxbHibernateConfiguration.JaxbSessionFactory.JaxbMapping>();
@@ -156,6 +173,8 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	private Configuration hibernateConfiguration;
 
 	private static EntityNotFoundDelegate jpaEntityNotFoundDelegate = new JpaEntityNotFoundDelegate();
+	
+	private ClassLoader providedClassLoader;
 
 	private static class JpaEntityNotFoundDelegate implements EntityNotFoundDelegate, Serializable {
 		public void handleEntityNotFound(String entityName, Serializable id) {
@@ -164,6 +183,14 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	}
 
 	public EntityManagerFactoryBuilderImpl(PersistenceUnitDescriptor persistenceUnit, Map integrationSettings) {
+		this( persistenceUnit, integrationSettings, null );
+	}
+
+	public EntityManagerFactoryBuilderImpl(
+			PersistenceUnitDescriptor persistenceUnit,
+			Map integrationSettings,
+			ClassLoader providedClassLoader ) {
+		
 		LogHelper.logPersistenceUnitInformation( persistenceUnit );
 
 		this.persistenceUnit = persistenceUnit;
@@ -171,6 +198,8 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		if ( integrationSettings == null ) {
 			integrationSettings = Collections.emptyMap();
 		}
+		
+		this.providedClassLoader = providedClassLoader;
 
 		// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		// First we build the boot-strap service registry, which mainly handles class loader interactions
@@ -187,13 +216,14 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		// Next we do a preliminary pass at metadata processing, which involves:
 		//		1) scanning
-		ScanResult scanResult = scan( bootstrapServiceRegistry );
+		final ScanResult scanResult = scan( bootstrapServiceRegistry );
+		final DeploymentResources deploymentResources = buildDeploymentResources( scanResult, bootstrapServiceRegistry );
 		//		2) building a Jandex index
-		Set<String> collectedManagedClassNames = collectManagedClassNames( scanResult );
-		IndexView jandexIndex = locateOrBuildJandexIndex( collectedManagedClassNames, scanResult.getPackageNames(), bootstrapServiceRegistry );
+		final IndexView jandexIndex = locateOrBuildJandexIndex( deploymentResources );
 		//		3) building "metadata sources" to keep for later to use in building the SessionFactory
-		metadataSources = prepareMetadataSources( jandexIndex, collectedManagedClassNames, scanResult, bootstrapServiceRegistry );
+		metadataSources = prepareMetadataSources( jandexIndex, deploymentResources, bootstrapServiceRegistry );
 
+		// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		withValidatorFactory( configurationValues.get( AvailableSettings.VALIDATION_FACTORY ) );
 
 		// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -203,6 +233,122 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		if ( useClassTransformer ) {
 			persistenceUnit.pushClassTransformer( metadataSources.collectMappingClassNames() );
 		}
+	}
+
+	private static interface DeploymentResources {
+		public Iterable<ClassDescriptor> getClassDescriptors();
+		public Iterable<PackageDescriptor> getPackageDescriptors();
+		public Iterable<MappingFileDescriptor> getMappingFileDescriptors();
+	}
+
+	private DeploymentResources buildDeploymentResources(
+			ScanResult scanResult,
+			BootstrapServiceRegistry bootstrapServiceRegistry) {
+
+		// mapping files ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+		final ArrayList<MappingFileDescriptor> mappingFileDescriptors = new ArrayList<MappingFileDescriptor>();
+
+		final Set<String> nonLocatedMappingFileNames = new HashSet<String>();
+		final List<String> explicitMappingFileNames = persistenceUnit.getMappingFileNames();
+		if ( explicitMappingFileNames != null ) {
+			nonLocatedMappingFileNames.addAll( explicitMappingFileNames );
+		}
+
+		for ( MappingFileDescriptor mappingFileDescriptor : scanResult.getLocatedMappingFiles() ) {
+			mappingFileDescriptors.add( mappingFileDescriptor );
+			nonLocatedMappingFileNames.remove( mappingFileDescriptor.getName() );
+		}
+
+		for ( String name : nonLocatedMappingFileNames ) {
+			MappingFileDescriptor descriptor = buildMappingFileDescriptor( name, bootstrapServiceRegistry );
+			mappingFileDescriptors.add( descriptor );
+		}
+
+
+		// classes and packages ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+		final HashMap<String, ClassDescriptor> classDescriptorMap = new HashMap<String, ClassDescriptor>();
+		final HashMap<String, PackageDescriptor> packageDescriptorMap = new HashMap<String, PackageDescriptor>();
+
+		for ( ClassDescriptor classDescriptor : scanResult.getLocatedClasses() ) {
+			classDescriptorMap.put( classDescriptor.getName(), classDescriptor );
+		}
+
+		for ( PackageDescriptor packageDescriptor : scanResult.getLocatedPackages() ) {
+			packageDescriptorMap.put( packageDescriptor.getName(), packageDescriptor );
+		}
+
+		final List<String> explicitClassNames = persistenceUnit.getManagedClassNames();
+		if ( explicitClassNames != null ) {
+			for ( String explicitClassName : explicitClassNames ) {
+				// IMPL NOTE : explicitClassNames can contain class or package names!!!
+				if ( classDescriptorMap.containsKey( explicitClassName ) ) {
+					continue;
+				}
+				if ( packageDescriptorMap.containsKey( explicitClassName ) ) {
+					continue;
+				}
+
+				// try it as a class name first...
+				final String classFileName = explicitClassName.replace( '.', '/' ) + ".class";
+				final URL classFileUrl = bootstrapServiceRegistry.getService( ClassLoaderService.class )
+						.locateResource( classFileName );
+				if ( classFileUrl != null ) {
+					classDescriptorMap.put(
+							explicitClassName,
+							new ClassDescriptorImpl( explicitClassName, new UrlInputStreamAccess( classFileUrl ) )
+					);
+					continue;
+				}
+
+				// otherwise, try it as a package name
+				final String packageInfoFileName = explicitClassName.replace( '.', '/' ) + "/package-info.class";
+				final URL packageInfoFileUrl = bootstrapServiceRegistry.getService( ClassLoaderService.class )
+						.locateResource( packageInfoFileName );
+				if ( packageInfoFileUrl != null ) {
+					packageDescriptorMap.put(
+							explicitClassName,
+							new PackageDescriptorImpl( explicitClassName, new UrlInputStreamAccess( packageInfoFileUrl ) )
+					);
+					continue;
+				}
+
+				LOG.debugf(
+						"Unable to resolve class [%s] named in persistence unit [%s]",
+						explicitClassName,
+						persistenceUnit.getName()
+				);
+			}
+		}
+
+		return new DeploymentResources() {
+			@Override
+			public Iterable<ClassDescriptor> getClassDescriptors() {
+				return classDescriptorMap.values();
+			}
+
+			@Override
+			public Iterable<PackageDescriptor> getPackageDescriptors() {
+				return packageDescriptorMap.values();
+			}
+
+			@Override
+			public Iterable<MappingFileDescriptor> getMappingFileDescriptors() {
+				return mappingFileDescriptors;
+			}
+		};
+	}
+
+	private MappingFileDescriptor buildMappingFileDescriptor(
+			String name,
+			BootstrapServiceRegistry bootstrapServiceRegistry) {
+		final URL url = bootstrapServiceRegistry.getService( ClassLoaderService.class ).locateResource( name );
+		if ( url == null ) {
+			throw persistenceException( "Unable to resolve named mapping-file [" + name + "]" );
+		}
+
+		return new MappingFileDescriptorImpl( name, new UrlInputStreamAccess( url ) );
 	}
 
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -221,13 +367,13 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	@SuppressWarnings("unchecked")
 	private MetadataSources prepareMetadataSources(
 			IndexView jandexIndex,
-			Set<String> collectedManagedClassNames,
-			ScanResult scanResult,
+			DeploymentResources deploymentResources,
 			BootstrapServiceRegistry bootstrapServiceRegistry) {
 		// todo : this needs to tie into the metamodel branch...
 		MetadataSources metadataSources = new MetadataSources();
 
-		for ( String className : collectedManagedClassNames ) {
+		for ( ClassDescriptor classDescriptor : deploymentResources.getClassDescriptors() ) {
+			final String className = classDescriptor.getName();
 			final ClassInfo classInfo = jandexIndex.getClassByName( DotName.createSimple( className ) );
 			if ( classInfo == null ) {
 				// Not really sure what this means.  Most likely it is explicitly listed in the persistence unit,
@@ -245,7 +391,8 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 				metadataSources.converterDescriptors.add(
 						new MetadataSources.ConverterDescriptor(
 								className,
-								JandexHelper.getValue( converterAnnotation, "autoApply", boolean.class )
+								JandexHelper.getValue( converterAnnotation, "autoApply", boolean.class,
+										bootstrapServiceRegistry.getService( ClassLoaderService.class ) )
 						)
 				);
 			}
@@ -254,15 +401,19 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 			}
 		}
 
-		metadataSources.packageNames.addAll( scanResult.getPackageNames() );
+		for ( PackageDescriptor packageDescriptor : deploymentResources.getPackageDescriptors() ) {
+			metadataSources.packageNames.add( packageDescriptor.getName() );
+		}
 
-		metadataSources.namedMappingFileInputStreams.addAll( scanResult.getHbmFiles() );
+		for ( MappingFileDescriptor mappingFileDescriptor : deploymentResources.getMappingFileDescriptors() ) {
+			metadataSources.namedMappingFileInputStreams.add( mappingFileDescriptor.getStreamAccess().asNamedInputStream() );
+		}
 
-		metadataSources.mappingFileResources.addAll( scanResult.getMappingFiles() );
 		final String explicitHbmXmls = (String) configurationValues.remove( AvailableSettings.HBXML_FILES );
 		if ( explicitHbmXmls != null ) {
 			metadataSources.mappingFileResources.addAll( Arrays.asList( StringHelper.split( ", ", explicitHbmXmls ) ) );
 		}
+
 		final List<String> explicitOrmXml = (List<String>) configurationValues.remove( AvailableSettings.XML_FILE_NAMES );
 		if ( explicitOrmXml != null ) {
 			metadataSources.mappingFileResources.addAll( explicitOrmXml );
@@ -271,41 +422,26 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		return metadataSources;
 	}
 
-	private Set<String> collectManagedClassNames(ScanResult scanResult) {
-		Set<String> collectedNames = new HashSet<String>();
-		if ( persistenceUnit.getManagedClassNames() != null ) {
-			collectedNames.addAll( persistenceUnit.getManagedClassNames() );
-		}
-		collectedNames.addAll( scanResult.getManagedClassNames() );
-		return collectedNames;
-	}
-
-	private IndexView locateOrBuildJandexIndex(
-			Set<String> collectedManagedClassNames,
-			List<String> packageNames,
-			BootstrapServiceRegistry bootstrapServiceRegistry) {
+	private IndexView locateOrBuildJandexIndex(DeploymentResources deploymentResources) {
 		// for now create a whole new Index to work with, eventually we need to:
 		//		1) accept an Index as an incoming config value
 		//		2) pass that Index along to the metamodel code...
-		//
-		// (1) is mocked up here, but JBoss AS does not currently pass in any Index to use...
 		IndexView jandexIndex = (IndexView) configurationValues.get( JANDEX_INDEX );
 		if ( jandexIndex == null ) {
-			jandexIndex = buildJandexIndex( collectedManagedClassNames, packageNames, bootstrapServiceRegistry );
+			jandexIndex = buildJandexIndex( deploymentResources );
 		}
 		return jandexIndex;
 	}
 
-	private IndexView buildJandexIndex(Set<String> classNamesSource, List<String> packageNames, BootstrapServiceRegistry bootstrapServiceRegistry) {
+	private IndexView buildJandexIndex(DeploymentResources deploymentResources) {
 		Indexer indexer = new Indexer();
 
-		for ( String className : classNamesSource ) {
-			indexResource( className.replace( '.', '/' ) + ".class", indexer, bootstrapServiceRegistry );
+		for ( ClassDescriptor classDescriptor : deploymentResources.getClassDescriptors() ) {
+			indexStream( indexer, classDescriptor.getStreamAccess() );
 		}
 
-		// add package-info from the configured packages
-		for ( String packageName : packageNames ) {
-			indexResource( packageName.replace( '.', '/' ) + "/package-info.class", indexer, bootstrapServiceRegistry );
+		for ( PackageDescriptor packageDescriptor : deploymentResources.getPackageDescriptors() ) {
+			indexStream( indexer, packageDescriptor.getStreamAccess() );
 		}
 
 		// for now we just skip entities defined in (1) orm.xml files and (2) hbm.xml files.  this part really needs
@@ -313,16 +449,25 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 
 		// for now, we also need to wrap this in a CompositeIndex until Jandex is updated to use a common interface
 		// between the 2...
-		return CompositeIndex.create( indexer.complete() );
+		return indexer.complete();
 	}
 
-	private void indexResource(String resourceName, Indexer indexer, BootstrapServiceRegistry bootstrapServiceRegistry) {
-		InputStream stream = bootstrapServiceRegistry.getService( ClassLoaderService.class ).locateResourceStream( resourceName );
+	private void indexStream(Indexer indexer, InputStreamAccess streamAccess) {
 		try {
-			indexer.index( stream );
+			InputStream stream = streamAccess.accessInputStream();
+			try {
+				indexer.index( stream );
+			}
+			finally {
+				try {
+					stream.close();
+				}
+				catch (Exception ignore) {
+				}
+			}
 		}
 		catch ( IOException e ) {
-			throw persistenceException( "Unable to open input stream for resource " + resourceName, e );
+			throw persistenceException( "Unable to index from stream " + streamAccess.getStreamName(), e );
 		}
 	}
 
@@ -340,20 +485,35 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 
 		final IntegratorProvider integratorProvider = (IntegratorProvider) integrationSettings.get( INTEGRATOR_PROVIDER );
 		if ( integratorProvider != null ) {
-			integrationSettings.remove( INTEGRATOR_PROVIDER );
 			for ( Integrator integrator : integratorProvider.getIntegrators() ) {
 				bootstrapServiceRegistryBuilder.with( integrator );
 			}
 		}
+		
+		final StrategyRegistrationProviderList strategyRegistrationProviderList
+				= (StrategyRegistrationProviderList) integrationSettings.get( STRATEGY_REGISTRATION_PROVIDERS );
+		if ( strategyRegistrationProviderList != null ) {
+			for ( StrategyRegistrationProvider strategyRegistrationProvider : strategyRegistrationProviderList
+					.getStrategyRegistrationProviders() ) {
+				bootstrapServiceRegistryBuilder.withStrategySelectors( strategyRegistrationProvider );
+			}
+		}
 
-		ClassLoader classLoader = (ClassLoader) integrationSettings.get( org.hibernate.cfg.AvailableSettings.APP_CLASSLOADER );
-		if ( classLoader != null ) {
-			integrationSettings.remove( org.hibernate.cfg.AvailableSettings.APP_CLASSLOADER );
+		// TODO: If providedClassLoader is present (OSGi, etc.) *and*
+		// an APP_CLASSLOADER is provided, should throw an exception or
+		// warn?
+		ClassLoader classLoader;
+		ClassLoader appClassLoader = (ClassLoader) integrationSettings.get( org.hibernate.cfg.AvailableSettings.APP_CLASSLOADER );
+		if ( providedClassLoader != null ) {
+			classLoader = providedClassLoader;
+		}
+		else if ( appClassLoader != null ) {
+			classLoader = appClassLoader;
 		}
 		else {
 			classLoader = persistenceUnit.getClassLoader();
 		}
-		bootstrapServiceRegistryBuilder.withApplicationClassLoader( classLoader );
+		bootstrapServiceRegistryBuilder.with( classLoader );
 
 		return bootstrapServiceRegistryBuilder.build();
 	}
@@ -381,39 +541,35 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 				}
 		);
 
-		{
-			final String cfgXmlResourceName = (String) merged.remove( AvailableSettings.CFG_FILE );
-			if ( StringHelper.isNotEmpty( cfgXmlResourceName ) ) {
-				// it does, so load those properties
-				JaxbHibernateConfiguration configurationElement = configLoaderHolder.getValue()
-						.loadConfigXmlResource( cfgXmlResourceName );
-				processHibernateConfigurationElement( configurationElement, merged );
-			}
+		final String cfgXmlResourceName1 = (String) merged.remove( AvailableSettings.CFG_FILE );
+		if ( StringHelper.isNotEmpty( cfgXmlResourceName1 ) ) {
+			// it does, so load those properties
+			JaxbHibernateConfiguration configurationElement = configLoaderHolder.getValue()
+					.loadConfigXmlResource( cfgXmlResourceName1 );
+			processHibernateConfigurationElement( configurationElement, merged );
 		}
 
 		// see if integration settings named a Hibernate config file....
-		{
-			final String cfgXmlResourceName = (String) integrationSettings.get( AvailableSettings.CFG_FILE );
-			if ( StringHelper.isNotEmpty( cfgXmlResourceName ) ) {
-				integrationSettings.remove( AvailableSettings.CFG_FILE );
-				// it does, so load those properties
-				JaxbHibernateConfiguration configurationElement = configLoaderHolder.getValue().loadConfigXmlResource(
-						cfgXmlResourceName
-				);
-				processHibernateConfigurationElement( configurationElement, merged );
-			}
+		final String cfgXmlResourceName2 = (String) integrationSettings.get( AvailableSettings.CFG_FILE );
+		if ( StringHelper.isNotEmpty( cfgXmlResourceName2 ) ) {
+			integrationSettings.remove( AvailableSettings.CFG_FILE );
+			// it does, so load those properties
+			JaxbHibernateConfiguration configurationElement = configLoaderHolder.getValue().loadConfigXmlResource(
+					cfgXmlResourceName2
+			);
+			processHibernateConfigurationElement( configurationElement, merged );
 		}
 
 		// finally, apply integration-supplied settings (per JPA spec, integration settings should override other sources)
 		merged.putAll( integrationSettings );
 
-		if ( ! merged.containsKey( AvailableSettings.VALIDATION_MODE ) ) {
+		if ( !merged.containsKey( AvailableSettings.VALIDATION_MODE ) ) {
 			if ( persistenceUnit.getValidationMode() != null ) {
 				merged.put( AvailableSettings.VALIDATION_MODE, persistenceUnit.getValidationMode() );
 			}
 		}
 
-		if ( ! merged.containsKey( AvailableSettings.SHARED_CACHE_MODE ) ) {
+		if ( !merged.containsKey( AvailableSettings.SHARED_CACHE_MODE ) ) {
 			if ( persistenceUnit.getSharedCacheMode() != null ) {
 				merged.put( AvailableSettings.SHARED_CACHE_MODE, persistenceUnit.getSharedCacheMode() );
 			}
@@ -480,11 +636,9 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		}
 
 		if ( configurationElement.getSecurity() != null ) {
-			final String contextId = configurationElement.getSecurity().getContext();
 			for ( JaxbHibernateConfiguration.JaxbSecurity.JaxbGrant grant : configurationElement.getSecurity().getGrant() ) {
-				jaccDefinitions.add(
-						new JaccDefinition(
-								contextId,
+				grantedJaccPermissions.add(
+						new GrantedPermission(
 								grant.getRole(),
 								grant.getEntityName(),
 								grant.getActions()
@@ -513,10 +667,7 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 			final int classStart = roleStart + role.length() + 1;
 			final String clazz = key.substring( classStart, key.length() );
 
-			final JaccDefinition def = new JaccDefinition( jaccContextId, role, clazz, (String) value );
-
-			jaccDefinitions.add( def );
-
+			grantedJaccPermissions.add( new GrantedPermission( role, clazz, (String) value ) );
 		}
 		catch ( IndexOutOfBoundsException e ) {
 			throw persistenceException( "Illegal usage of " + AvailableSettings.JACC_PREFIX + ": " + key );
@@ -566,37 +717,24 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 
 	@SuppressWarnings("unchecked")
 	private ScanResult scan(BootstrapServiceRegistry bootstrapServiceRegistry) {
-		Scanner scanner = locateOrBuildScanner( bootstrapServiceRegistry );
-		ScanningContext scanningContext = new ScanningContext();
+		final Scanner scanner = locateOrBuildScanner( bootstrapServiceRegistry );
+		final ScanOptions scanOptions = determineScanOptions();
 
-		final ScanResult scanResult = new ScanResult();
-		if ( persistenceUnit.getMappingFileNames() != null ) {
-			scanResult.getMappingFiles().addAll( persistenceUnit.getMappingFileNames() );
-		}
+		return scanner.scan( persistenceUnit, scanOptions );
+	}
 
-		// dunno, but the old code did it...
-		scanningContext.setSearchOrm( ! scanResult.getMappingFiles().contains( META_INF_ORM_XML ) );
-
-		if ( persistenceUnit.getJarFileUrls() != null ) {
-			prepareAutoDetectionSettings( scanningContext, false );
-			for ( URL jar : persistenceUnit.getJarFileUrls() ) {
-				scanningContext.setUrl( jar );
-				scanInContext( scanner, scanningContext, scanResult );
-			}
-		}
-
-		prepareAutoDetectionSettings( scanningContext, persistenceUnit.isExcludeUnlistedClasses() );
-		scanningContext.setUrl( persistenceUnit.getPersistenceUnitRootUrl() );
-		scanInContext( scanner, scanningContext, scanResult );
-
-		return scanResult;
+	private ScanOptions determineScanOptions() {
+		return new StandardScanOptions(
+				(String) configurationValues.get( AvailableSettings.AUTODETECTION ),
+				persistenceUnit.isExcludeUnlistedClasses()
+		);
 	}
 
 	@SuppressWarnings("unchecked")
 	private Scanner locateOrBuildScanner(BootstrapServiceRegistry bootstrapServiceRegistry) {
 		final Object value = configurationValues.remove( AvailableSettings.SCANNER );
 		if ( value == null ) {
-			return new NativeScanner();
+			return new StandardScanner();
 		}
 
 		if ( Scanner.class.isInstance( value ) ) {
@@ -630,85 +768,6 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		}
 	}
 
-	private void prepareAutoDetectionSettings(ScanningContext context, boolean excludeUnlistedClasses) {
-		final String detectionSetting = (String) configurationValues.get( AvailableSettings.AUTODETECTION );
-
-		if ( detectionSetting == null ) {
-			if ( excludeUnlistedClasses ) {
-				context.setDetectClasses( false );
-				context.setDetectHbmFiles( false );
-			}
-			else {
-				context.setDetectClasses( true );
-				context.setDetectHbmFiles( true );
-			}
-		}
-		else {
-			for ( String token : StringHelper.split( ", ", detectionSetting ) ) {
-				if ( "class".equalsIgnoreCase( token ) ) {
-					context.setDetectClasses( true );
-				}
-				if ( "hbm".equalsIgnoreCase( token ) ) {
-					context.setDetectClasses( true );
-				}
-			}
-		}
-	}
-
-	private void scanInContext(
-			Scanner scanner,
-			ScanningContext scanningContext,
-			ScanResult scanResult) {
-		if ( scanningContext.getUrl() == null ) {
-			// not sure i like just ignoring this being null, but this is exactly what the old code does...
-			LOG.containerProvidingNullPersistenceUnitRootUrl();
-			return;
-		}
-
-		try {
-			if ( scanningContext.isDetectClasses() ) {
-				Set<Package> matchingPackages = scanner.getPackagesInJar( scanningContext.url, new HashSet<Class<? extends Annotation>>(0) );
-				for ( Package pkg : matchingPackages ) {
-					scanResult.getPackageNames().add( pkg.getName() );
-				}
-
-				Set<Class<? extends Annotation>> annotationsToLookFor = new HashSet<Class<? extends Annotation>>();
-				annotationsToLookFor.add( Entity.class );
-				annotationsToLookFor.add( MappedSuperclass.class );
-				annotationsToLookFor.add( Embeddable.class );
-				annotationsToLookFor.add( Converter.class );
-				Set<Class<?>> matchingClasses = scanner.getClassesInJar( scanningContext.url, annotationsToLookFor );
-				for ( Class<?> clazz : matchingClasses ) {
-					scanResult.getManagedClassNames().add( clazz.getName() );
-				}
-			}
-
-			Set<String> patterns = new HashSet<String>();
-			if ( scanningContext.isSearchOrm() ) {
-				patterns.add( META_INF_ORM_XML );
-			}
-			if ( scanningContext.isDetectHbmFiles() ) {
-				patterns.add( "**/*.hbm.xml" );
-			}
-			if ( ! scanResult.getMappingFiles().isEmpty() ) {
-				patterns.addAll( scanResult.getMappingFiles() );
-			}
-			if ( patterns.size() != 0 ) {
-				Set<NamedInputStream> files = scanner.getFilesInJar( scanningContext.getUrl(), patterns );
-				for ( NamedInputStream file : files ) {
-					scanResult.getHbmFiles().add( file );
-					scanResult.getMappingFiles().remove( file.getName() );
-				}
-			}
-		}
-		catch (PersistenceException e ) {
-			throw e;
-		}
-		catch ( RuntimeException e ) {
-			throw persistenceException( "error trying to scan url: " + scanningContext.getUrl().toString(), e );
-		}
-	}
-
 	@Override
 	public EntityManagerFactoryBuilder withValidatorFactory(Object validatorFactory) {
 		this.validatorFactory = validatorFactory;
@@ -730,6 +789,43 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	public void cancel() {
 		// todo : close the bootstrap registry (not critical, but nice to do)
 
+	}
+
+	@Override
+	public void generateSchema() {
+		processProperties();
+
+		final ServiceRegistry serviceRegistry = buildServiceRegistry();
+		final ClassLoaderService classLoaderService = serviceRegistry.getService( ClassLoaderService.class );
+
+		// IMPL NOTE : TCCL handling here is temporary.
+		//		It is needed because this code still uses Hibernate Configuration and Hibernate commons-annotations
+		// 		in turn which relies on TCCL being set.
+
+		( (ClassLoaderServiceImpl) classLoaderService ).withTccl(
+				new ClassLoaderServiceImpl.Work() {
+					@Override
+					public Object perform() {
+						final Configuration hibernateConfiguration = buildHibernateConfiguration( serviceRegistry );
+						
+						// This seems overkill, but building the SF is necessary to get the Integrators to kick in.
+						// Metamodel will clean this up...
+						try {
+							hibernateConfiguration.buildSessionFactory( serviceRegistry );
+						}
+						catch (MappingException e) {
+							throw persistenceException( "Unable to build Hibernate SessionFactory", e );
+						}
+						
+						JpaSchemaGenerator.performGeneration( hibernateConfiguration, serviceRegistry );
+						
+						return null;
+					}
+				}
+		);
+
+		// release this builder
+		cancel();
 	}
 
 	@SuppressWarnings("unchecked")
@@ -756,6 +852,9 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 						catch (MappingException e) {
 							throw persistenceException( "Unable to build Hibernate SessionFactory", e );
 						}
+						
+						// must do after buildSessionFactory to let the Integrators kick in
+						JpaSchemaGenerator.performGeneration( hibernateConfiguration, serviceRegistry );
 
 						if ( suppliedSessionFactoryObserver != null ) {
 							sessionFactory.addObserver( suppliedSessionFactoryObserver );
@@ -763,7 +862,13 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 						sessionFactory.addObserver( new ServiceRegistryCloser() );
 
 						// NOTE : passing cfg is temporary until
-						return new EntityManagerFactoryImpl( persistenceUnit.getName(), sessionFactory, settings, configurationValues, hibernateConfiguration );
+						return new EntityManagerFactoryImpl(
+								persistenceUnit.getName(),
+								sessionFactory,
+								settings,
+								configurationValues,
+								hibernateConfiguration
+						);
 					}
 				}
 		);
@@ -780,6 +885,7 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		if ( validationFactory != null ) {
 			BeanValidationIntegrator.validateFactory( validationFactory );
 			serviceRegistryBuilder.applySetting( AvailableSettings.VALIDATION_FACTORY, validationFactory );
+			configurationValues.put( AvailableSettings.VALIDATION_FACTORY, this.validatorFactory );
 		}
 
 		// flush before completion validation
@@ -837,13 +943,21 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 
 	private void applyJdbcConnectionProperties() {
 		if ( dataSource != null ) {
-			serviceRegistryBuilder.applySetting( Environment.DATASOURCE, dataSource );
+			serviceRegistryBuilder.applySetting( org.hibernate.cfg.AvailableSettings.DATASOURCE, dataSource );
 		}
 		else if ( persistenceUnit.getJtaDataSource() != null ) {
-			serviceRegistryBuilder.applySetting( Environment.DATASOURCE, persistenceUnit.getJtaDataSource() );
+			if ( ! serviceRegistryBuilder.getSettings().containsKey( org.hibernate.cfg.AvailableSettings.DATASOURCE ) ) {
+				serviceRegistryBuilder.applySetting( org.hibernate.cfg.AvailableSettings.DATASOURCE, persistenceUnit.getJtaDataSource() );
+				// HHH-8121 : make the PU-defined value available to EMF.getProperties()
+				configurationValues.put( AvailableSettings.JTA_DATASOURCE, persistenceUnit.getJtaDataSource() );
+			}
 		}
 		else if ( persistenceUnit.getNonJtaDataSource() != null ) {
-			serviceRegistryBuilder.applySetting( Environment.DATASOURCE, persistenceUnit.getNonJtaDataSource() );
+			if ( ! serviceRegistryBuilder.getSettings().containsKey( org.hibernate.cfg.AvailableSettings.DATASOURCE ) ) {
+				serviceRegistryBuilder.applySetting( org.hibernate.cfg.AvailableSettings.DATASOURCE, persistenceUnit.getNonJtaDataSource() );
+				// HHH-8121 : make the PU-defined value available to EMF.getProperties()
+				configurationValues.put( AvailableSettings.NON_JTA_DATASOURCE, persistenceUnit.getNonJtaDataSource() );
+			}
 		}
 		else {
 			final String driver = (String) configurationValues.get( AvailableSettings.JDBC_DRIVER );
@@ -903,13 +1017,14 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 	}
 
 	public ServiceRegistry buildServiceRegistry() {
-		return serviceRegistryBuilder.buildServiceRegistry();
+		return serviceRegistryBuilder.build();
 	}
 
 	public Configuration buildHibernateConfiguration(ServiceRegistry serviceRegistry) {
 		Properties props = new Properties();
 		props.putAll( configurationValues );
-		Configuration cfg = new Configuration().setProperties( props );
+		Configuration cfg = new Configuration();
+		cfg.getProperties().putAll( props );
 
 		cfg.setEntityNotFoundDelegate( jpaEntityNotFoundDelegate );
 
@@ -934,10 +1049,10 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 			}
 		}
 
-		if ( jaccDefinitions != null ) {
-			for ( JaccDefinition jaccDefinition : jaccDefinitions ) {
-				JACCConfiguration jaccCfg = new JACCConfiguration( jaccDefinition.contextId );
-				jaccCfg.addPermission( jaccDefinition.role, jaccDefinition.clazz, jaccDefinition.actions );
+		if ( grantedJaccPermissions != null ) {
+			final JaccService jaccService = serviceRegistry.getService( JaccService.class );
+			for ( GrantedPermission grantedPermission : grantedJaccPermissions ) {
+				jaccService.addPermission( grantedPermission );
 			}
 		}
 
@@ -984,7 +1099,12 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 		List<Class> loadedAnnotatedClasses = (List<Class>) configurationValues.remove( AvailableSettings.LOADED_CLASSES );
 		if ( loadedAnnotatedClasses != null ) {
 			for ( Class cls : loadedAnnotatedClasses ) {
-				cfg.addAnnotatedClass( cls );
+				if ( AttributeConverter.class.isAssignableFrom( cls ) ) {
+					cfg.addAttributeConverter( (Class<? extends AttributeConverter>) cls );
+				}
+				else {
+					cfg.addAnnotatedClass( cls );
+				}
 			}
 		}
 
@@ -1042,19 +1162,43 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 				//addInputStream has the responsibility to close the stream
 				cfg.addInputStream( new BufferedInputStream( namedInputStream.getStream() ) );
 			}
-			catch (MappingException me) {
-				//try our best to give the file name
-				if ( StringHelper.isEmpty( namedInputStream.getName() ) ) {
-					throw me;
+			catch ( InvalidMappingException e ) {
+				// try our best to give the file name
+				if ( StringHelper.isNotEmpty( namedInputStream.getName() ) ) {
+					throw new InvalidMappingException(
+							"Error while parsing file: " + namedInputStream.getName(),
+							e.getType(),
+							e.getPath(),
+							e
+					);
 				}
 				else {
+					throw e;
+				}
+			}
+			catch (MappingException me) {
+				// try our best to give the file name
+				if ( StringHelper.isNotEmpty( namedInputStream.getName() ) ) {
 					throw new MappingException("Error while parsing file: " + namedInputStream.getName(), me );
+				}
+				else {
+					throw me;
 				}
 			}
 		}
 		for ( String packageName : metadataSources.packageNames ) {
 			cfg.addPackage( packageName );
 		}
+		
+		final TypeContributorList typeContributorList
+				= (TypeContributorList) configurationValues.get( TYPE_CONTRIBUTORS );
+		if ( typeContributorList != null ) {
+			configurationValues.remove( TYPE_CONTRIBUTORS );
+			for ( TypeContributor typeContributor : typeContributorList.getTypeContributors() ) {
+				cfg.registerTypeContributor( typeContributor );
+			}
+		}
+		
 		return cfg;
 	}
 
@@ -1121,68 +1265,6 @@ public class EntityManagerFactoryBuilderImpl implements EntityManagerFactoryBuil
 			this.role = role;
 			this.clazz = clazz;
 			this.actions = actions;
-		}
-	}
-
-	public static class ScanningContext {
-		private URL url;
-		private boolean detectClasses;
-		private boolean detectHbmFiles;
-		private boolean searchOrm;
-
-		public URL getUrl() {
-			return url;
-		}
-
-		public void setUrl(URL url) {
-			this.url = url;
-		}
-
-		public boolean isDetectClasses() {
-			return detectClasses;
-		}
-
-		public void setDetectClasses(boolean detectClasses) {
-			this.detectClasses = detectClasses;
-		}
-
-		public boolean isDetectHbmFiles() {
-			return detectHbmFiles;
-		}
-
-		public void setDetectHbmFiles(boolean detectHbmFiles) {
-			this.detectHbmFiles = detectHbmFiles;
-		}
-
-		public boolean isSearchOrm() {
-			return searchOrm;
-		}
-
-		public void setSearchOrm(boolean searchOrm) {
-			this.searchOrm = searchOrm;
-		}
-	}
-
-	private static class ScanResult {
-		private final List<String> managedClassNames = new ArrayList<String>();
-		private final List<String> packageNames = new ArrayList<String>();
-		private final List<NamedInputStream> hbmFiles = new ArrayList<NamedInputStream>();
-		private final List<String> mappingFiles = new ArrayList<String>();
-
-		public List<String> getManagedClassNames() {
-			return managedClassNames;
-		}
-
-		public List<String> getPackageNames() {
-			return packageNames;
-		}
-
-		public List<NamedInputStream> getHbmFiles() {
-			return hbmFiles;
-		}
-
-		public List<String> getMappingFiles() {
-			return mappingFiles;
 		}
 	}
 

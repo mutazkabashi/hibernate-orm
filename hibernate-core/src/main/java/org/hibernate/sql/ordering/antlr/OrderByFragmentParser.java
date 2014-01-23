@@ -29,15 +29,15 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import antlr.CommonAST;
-import antlr.TokenStream;
-import antlr.collections.AST;
-
-import org.jboss.logging.Logger;
-
 import org.hibernate.dialect.function.SQLFunction;
 import org.hibernate.internal.util.StringHelper;
 import org.hibernate.sql.Template;
+
+import org.jboss.logging.Logger;
+
+import antlr.CommonAST;
+import antlr.TokenStream;
+import antlr.collections.AST;
 
 /**
  * Extension of the Antlr-generated parser for the purpose of adding our custom parsing behavior
@@ -228,7 +228,7 @@ public class OrderByFragmentParser extends GeneratedOrderByFragmentParser {
 	private String adjustTemplateReferences(String template) {
 		int templateLength = template.length();
 		int startPos = template.indexOf( Template.TEMPLATE );
-		while ( startPos < templateLength ) {
+		while ( startPos != -1 && startPos < templateLength ) {
 			int dotPos = startPos + TEMPLATE_MARKER_LENGTH;
 
 			// from here we need to seek the end of the qualified identifier
@@ -246,7 +246,7 @@ public class OrderByFragmentParser extends GeneratedOrderByFragmentParser {
 			columnReferences.add( columnReference );
 
 			// prep for the next seek
-			startPos = ( pos - TEMPLATE_MARKER_LENGTH ) + 1;
+			startPos = template.indexOf( Template.TEMPLATE, ( pos - TEMPLATE_MARKER_LENGTH ) + 1 );
 			templateLength = template.length();
 		}
 

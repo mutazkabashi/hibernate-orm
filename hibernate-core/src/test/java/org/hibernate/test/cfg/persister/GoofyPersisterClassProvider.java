@@ -25,6 +25,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.Set;
 
 import org.hibernate.EntityMode;
 import org.hibernate.HibernateException;
@@ -35,7 +36,9 @@ import org.hibernate.bytecode.spi.EntityInstrumentationMetadata;
 import org.hibernate.cache.spi.access.CollectionRegionAccessStrategy;
 import org.hibernate.cache.spi.access.EntityRegionAccessStrategy;
 import org.hibernate.cache.spi.access.NaturalIdRegionAccessStrategy;
+import org.hibernate.cache.spi.entry.CacheEntry;
 import org.hibernate.cache.spi.entry.CacheEntryStructure;
+import org.hibernate.cfg.NotYetImplementedException;
 import org.hibernate.collection.spi.PersistentCollection;
 import org.hibernate.engine.spi.CascadeStyle;
 import org.hibernate.engine.spi.Mapping;
@@ -53,6 +56,10 @@ import org.hibernate.metamodel.binding.PluralAttributeBinding;
 import org.hibernate.persister.collection.CollectionPersister;
 import org.hibernate.persister.entity.EntityPersister;
 import org.hibernate.persister.spi.PersisterClassResolver;
+import org.hibernate.persister.walking.spi.AttributeDefinition;
+import org.hibernate.persister.walking.spi.CollectionElementDefinition;
+import org.hibernate.persister.walking.spi.CollectionIndexDefinition;
+import org.hibernate.persister.walking.spi.EntityIdentifierDefinition;
 import org.hibernate.tuple.entity.EntityMetamodel;
 import org.hibernate.tuple.entity.EntityTuplizer;
 import org.hibernate.tuple.entity.NonPojoInstrumentationMetadata;
@@ -107,6 +114,10 @@ public class GoofyPersisterClassProvider implements PersisterClassResolver {
 		@Override
 		public EntityInstrumentationMetadata getInstrumentationMetadata() {
 			return new NonPojoInstrumentationMetadata( null );
+		}
+
+		@Override
+		public void generateEntityDefinition() {
 		}
 
 		@Override
@@ -401,6 +412,12 @@ public class GoofyPersisterClassProvider implements PersisterClassResolver {
 		}
 
 		@Override
+		public CacheEntry buildCacheEntry(
+				Object entity, Object[] state, Object version, SessionImplementor session) {
+			return null;
+		}
+
+		@Override
 		public ClassMetadata getClassMetadata() {
 			return null;
 		}
@@ -572,6 +589,31 @@ public class GoofyPersisterClassProvider implements PersisterClassResolver {
 			// TODO Auto-generated method stub
 			return null;
 		}
+
+		@Override
+		public EntityPersister getEntityPersister() {
+			return this;
+		}
+
+		@Override
+		public EntityIdentifierDefinition getEntityKeyDefinition() {
+			return null;  //To change body of implemented methods use File | Settings | File Templates.
+		}
+
+		@Override
+		public Iterable<AttributeDefinition> getAttributes() {
+			throw new NotYetImplementedException();
+		}
+
+        @Override
+        public int[] resolveAttributeIndexes(Set<String> attributes) {
+            return null;
+        }
+
+		@Override
+		public boolean canUseReferenceCacheEntries() {
+			return false;
+		}
 	}
 
 	public static class NoopCollectionPersister implements CollectionPersister {
@@ -599,8 +641,23 @@ public class GoofyPersisterClassProvider implements PersisterClassResolver {
 			return null;  //To change body of implemented methods use File | Settings | File Templates.
 		}
 
+		@Override
+		public CollectionPersister getCollectionPersister() {
+			return this;
+		}
+
 		public CollectionType getCollectionType() {
-			return null;  //To change body of implemented methods use File | Settings | File Templates.
+			throw new NotYetImplementedException();
+		}
+
+		@Override
+		public CollectionIndexDefinition getIndexDefinition() {
+			throw new NotYetImplementedException();
+		}
+
+		@Override
+		public CollectionElementDefinition getElementDefinition() {
+			throw new NotYetImplementedException();
 		}
 
 		public Type getKeyType() {
@@ -801,6 +858,21 @@ public class GoofyPersisterClassProvider implements PersisterClassResolver {
 
 		public Object getElementByIndex(Serializable key, Object index, SessionImplementor session, Object owner) {
 			return null;  //To change body of implemented methods use File | Settings | File Templates.
+		}
+
+		@Override
+		public int getBatchSize() {
+			return 0;
+		}
+
+		@Override
+		public String getMappedByProperty() {
+			return null;
+		}
+
+		@Override
+		public void processQueuedOps(PersistentCollection collection, Serializable key, SessionImplementor session)
+				throws HibernateException {
 		}
 	}
 }

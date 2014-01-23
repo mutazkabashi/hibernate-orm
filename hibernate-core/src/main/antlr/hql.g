@@ -78,6 +78,9 @@ tokens
 	UPDATE="update";
 	VERSIONED="versioned";
 	WHERE="where";
+	NULLS="nulls";
+	FIRST;
+	LAST;
 
 	// -- SQL tokens --
 	// These aren't part of HQL, but the SQL fragment parser uses the HQL lexer, so they need to be declared here.
@@ -213,6 +216,9 @@ tokens
 
     protected String unquote(String text) {
         return text.substring( 1, text.length() - 1 );
+    }
+
+    protected void registerTreat(AST pathToTreat, AST treatAs) {
     }
 }
 
@@ -366,7 +372,9 @@ joinPath
  * Uses a validating semantic predicate to make sure the text of the matched first IDENT is the TREAT keyword
  */
 castedJoinPath
-    : i:IDENT! OPEN! p:path AS! path! CLOSE! {i.getText().equals("treat") }?
+    : i:IDENT! OPEN! p:path AS! a:path! CLOSE! {i.getText().equalsIgnoreCase("treat") }? {
+        registerTreat( #p, #a );
+    }
     ;
 
 withClause
@@ -439,13 +447,31 @@ orderByClause
 	;
 
 orderElement
-	: expression ( ascendingOrDescending )?
+	: expression ( ascendingOrDescending )? ( nullOrdering )?
 	;
 
 ascendingOrDescending
 	: ( "asc" | "ascending" )	{ #ascendingOrDescending.setType(ASCENDING); }
 	| ( "desc" | "descending") 	{ #ascendingOrDescending.setType(DESCENDING); }
 	;
+
+nullOrdering
+    : NULLS nullPrecedence
+    ;
+
+nullPrecedence
+    : IDENT {
+            if ( "first".equalsIgnoreCase( #nullPrecedence.getText() ) ) {
+                #nullPrecedence.setType( FIRST );
+            }
+            else if ( "last".equalsIgnoreCase( #nullPrecedence.getText() ) ) {
+                #nullPrecedence.setType( LAST );
+            }
+            else {
+                throw new SemanticException( "Expecting 'first' or 'last', but found '" +  #nullPrecedence.getText() + "' as null ordering precedence." );
+            }
+    }
+    ;
 
 //## havingClause:
 //##     HAVING logicalExpression;
@@ -717,13 +743,15 @@ identPrimaryBase
     ;
 
 castedIdentPrimaryBase
-    : i:IDENT! OPEN! p:path AS! path! CLOSE! { i.getText().equals("treat") }?
+    : i:IDENT! OPEN! p:path AS! a:path! CLOSE! { i.getText().equals("treat") }? {
+        registerTreat( #p, #a );
+    }
     ;
 
 aggregate
 	: ( SUM^ | AVG^ | MAX^ | MIN^ ) OPEN! additiveExpression CLOSE! { #aggregate.setType(AGGREGATE); }
 	// Special case for count - It's 'parameters' can be keywords.
-	|  COUNT^ OPEN! ( STAR { #STAR.setType(ROW_STAR); } | ( ( DISTINCT | ALL )? ( path | collectionExpr | NUM_INT ) ) ) CLOSE!
+	|  COUNT^ OPEN! ( STAR { #STAR.setType(ROW_STAR); } | ( ( DISTINCT | ALL )? ( path | collectionExpr | NUM_INT | caseExpression ) ) ) CLOSE!
 	|  collectionExpr
 	;
 
@@ -737,6 +765,7 @@ collectionExpr
 compoundExpr
 	: collectionExpr
 	| path
+	| { LA(1) == OPEN && LA(2) == CLOSE }? OPEN! CLOSE!
 	| (OPEN! ( (expression (COMMA! expression)*) | subQuery ) CLOSE!)
 	| parameter
 	;

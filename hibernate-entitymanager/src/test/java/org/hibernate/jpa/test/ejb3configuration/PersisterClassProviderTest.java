@@ -24,6 +24,7 @@ import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.Set;
 import javax.persistence.EntityManagerFactory;
 import javax.persistence.PersistenceException;
 
@@ -38,6 +39,7 @@ import org.hibernate.MappingException;
 import org.hibernate.bytecode.spi.EntityInstrumentationMetadata;
 import org.hibernate.cache.spi.access.EntityRegionAccessStrategy;
 import org.hibernate.cache.spi.access.NaturalIdRegionAccessStrategy;
+import org.hibernate.cache.spi.entry.CacheEntry;
 import org.hibernate.cache.spi.entry.CacheEntryStructure;
 import org.hibernate.jpa.test.SettingsGenerator;
 import org.hibernate.jpa.test.PersistenceUnitDescriptorAdapter;
@@ -59,6 +61,8 @@ import org.hibernate.persister.collection.CollectionPersister;
 import org.hibernate.persister.entity.EntityPersister;
 import org.hibernate.persister.internal.PersisterClassResolverInitiator;
 import org.hibernate.persister.spi.PersisterClassResolver;
+import org.hibernate.persister.walking.spi.AttributeDefinition;
+import org.hibernate.persister.walking.spi.EntityIdentifierDefinition;
 import org.hibernate.tuple.entity.EntityMetamodel;
 import org.hibernate.tuple.entity.EntityTuplizer;
 import org.hibernate.tuple.entity.NonPojoInstrumentationMetadata;
@@ -138,6 +142,10 @@ public class PersisterClassProviderTest {
 		@Override
 		public EntityInstrumentationMetadata getInstrumentationMetadata() {
 			return new NonPojoInstrumentationMetadata( getEntityName() );
+		}
+
+		@Override
+		public void generateEntityDefinition() {
 		}
 
 		@Override
@@ -600,6 +608,36 @@ public class PersisterClassProviderTest {
 
 		@Override
 		public FilterAliasGenerator getFilterAliasGenerator(String rootAlias) {
+			return null;
+		}
+
+		@Override
+		public int[] resolveAttributeIndexes(Set<String> properties) {
+			return new int[0];
+		}
+
+		@Override
+		public boolean canUseReferenceCacheEntries() {
+			return false;  //To change body of implemented methods use File | Settings | File Templates.
+		}
+
+		@Override
+		public CacheEntry buildCacheEntry(Object entity, Object[] state, Object version, SessionImplementor session) {
+			return null;
+		}
+
+		@Override
+		public EntityPersister getEntityPersister() {
+			return this;
+		}
+
+		@Override
+		public EntityIdentifierDefinition getEntityKeyDefinition() {
+			return null;
+		}
+
+		@Override
+		public Iterable<AttributeDefinition> getAttributes() {
 			return null;
 		}
 	}

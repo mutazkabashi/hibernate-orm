@@ -25,8 +25,6 @@ package org.hibernate.cfg.annotations;
 
 import java.util.Map;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.AnnotationException;
 import org.hibernate.MappingException;
 import org.hibernate.annotations.OrderBy;
@@ -49,6 +47,8 @@ import org.hibernate.mapping.OneToMany;
 import org.hibernate.mapping.PersistentClass;
 import org.hibernate.mapping.SimpleValue;
 
+import org.jboss.logging.Logger;
+
 /**
  * Bind a list to the underlying Hibernate configuration
  *
@@ -60,6 +60,7 @@ public class ListBinder extends CollectionBinder {
 	private static final CoreMessageLogger LOG = Logger.getMessageLogger( CoreMessageLogger.class, ListBinder.class.getName() );
 
 	public ListBinder() {
+		super( false );
 	}
 
 	@Override
@@ -112,8 +113,8 @@ public class ListBinder extends CollectionBinder {
 			PropertyHolder valueHolder = PropertyHolderBuilder.buildPropertyHolder(
 					this.collection,
 					StringHelper.qualify( this.collection.getRole(), "key" ),
-					(XClass) null,
-					(XProperty) null, propertyHolder, mappings
+					null,
+					null, propertyHolder, mappings
 			);
 			List list = (List) this.collection;
 			if ( !list.isOneToMany() ) indexColumn.forceNotNull();

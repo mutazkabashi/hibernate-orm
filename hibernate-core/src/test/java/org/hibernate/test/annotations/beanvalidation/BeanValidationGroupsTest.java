@@ -71,7 +71,7 @@ public class BeanValidationGroupsTest extends BaseCoreFunctionalTestCase {
 		catch ( ConstraintViolationException e ) {
 			assertEquals( 1, e.getConstraintViolations().size() );
 			// TODO - seems this explicit case is necessary with JDK 5 (at least on Mac). With Java 6 there is no problem
-			Annotation annotation = (Annotation) e.getConstraintViolations()
+			Annotation annotation = e.getConstraintViolations()
 					.iterator()
 					.next()
 					.getConstraintDescriptor()
@@ -101,6 +101,7 @@ public class BeanValidationGroupsTest extends BaseCoreFunctionalTestCase {
 				Default.class.getName() + ", " + Strict.class.getName()
 		);
 		cfg.setProperty( "hibernate.validator.apply_to_ddl", "false" );
+		cfg.setProperty( "javax.persistence.validation.mode", "auto" );
 	}
 
 	@Override

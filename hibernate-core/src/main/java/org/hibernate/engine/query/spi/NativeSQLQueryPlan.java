@@ -1,10 +1,10 @@
 /*
  * Hibernate, Relational Persistence for Idiomatic Java
  *
- * Copyright (c) 2008, Red Hat Middleware LLC or third-party contributors as
+ * Copyright (c) 2008, 2013, Red Hat Inc. or third-party contributors as
  * indicated by the @author tags or express copyright attribution
  * statements applied by the authors.  All third-party contributions are
- * distributed under license by Red Hat Middleware LLC.
+ * distributed under license by Red Hat Inc.
  *
  * This copyrighted material is made available to anyone wishing to use, modify,
  * copy, or redistribute it subject to the terms and conditions of the GNU
@@ -20,7 +20,6 @@
  * Free Software Foundation, Inc.
  * 51 Franklin Street, Fifth Floor
  * Boston, MA  02110-1301  USA
- *
  */
 package org.hibernate.engine.query.spi;
 
@@ -31,8 +30,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.QueryException;
 import org.hibernate.action.internal.BulkOperationCleanupAction;
@@ -42,6 +39,7 @@ import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.engine.spi.SessionImplementor;
 import org.hibernate.engine.spi.TypedValue;
 import org.hibernate.event.spi.EventSource;
+import org.hibernate.internal.CoreLogging;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.internal.util.collections.ArrayHelper;
 import org.hibernate.loader.custom.sql.SQLCustomQuery;
@@ -53,22 +51,27 @@ import org.hibernate.type.Type;
  * @author Steve Ebersole
  */
 public class NativeSQLQueryPlan implements Serializable {
-	private final String sourceQuery;
+	private static final CoreMessageLogger LOG = CoreLogging.messageLogger( NativeSQLQueryPlan.class );
 
+	private final String sourceQuery;
 	private final SQLCustomQuery customQuery;
 
-    private static final CoreMessageLogger LOG = Logger.getMessageLogger(CoreMessageLogger.class, NativeSQLQueryPlan.class.getName());
-
+	/**
+	 * Constructs a NativeSQLQueryPlan
+	 *
+	 * @param specification The query spec
+	 * @param factory The SessionFactory
+	 */
 	public NativeSQLQueryPlan(
 			NativeSQLQuerySpecification specification,
 			SessionFactoryImplementor factory) {
 		this.sourceQuery = specification.getQueryString();
-
-		customQuery = new SQLCustomQuery(
+		this.customQuery = new SQLCustomQuery(
 				specification.getQueryString(),
 				specification.getQueryReturns(),
 				specification.getQuerySpaces(),
-				factory );
+				factory
+		);
 	}
 
 	public String getSourceQuery() {
@@ -80,14 +83,14 @@ public class NativeSQLQueryPlan implements Serializable {
 	}
 
 	private int[] getNamedParameterLocs(String name) throws QueryException {
-		Object loc = customQuery.getNamedParameterBindPoints().get( name );
+		final Object loc = customQuery.getNamedParameterBindPoints().get( name );
 		if ( loc == null ) {
 			throw new QueryException(
 					"Named parameter does not appear in Query: " + name,
 					customQuery.getSQL() );
 		}
 		if ( loc instanceof Integer ) {
-			return new int[] { ((Integer) loc ).intValue() };
+			return new int[] { (Integer) loc };
 		}
 		else {
 			return ArrayHelper.toIntArray( (List) loc );
@@ -147,71 +150,87 @@ public class NativeSQLQueryPlan implements Serializable {
 			final SessionImplementor session) throws SQLException {
 		if ( namedParams != null ) {
 			// assumes that types are all of span 1
-			Iterator iter = namedParams.entrySet().iterator();
+			final Iterator iter = namedParams.entrySet().iterator();
 			int result = 0;
 			while ( iter.hasNext() ) {
-				Map.Entry e = (Map.Entry) iter.next();
-				String name = (String) e.getKey();
-				TypedValue typedval = (TypedValue) e.getValue();
-				int[] locs = getNamedParameterLocs( name );
-				for (int i = 0; i < locs.length; i++) {
-                    LOG.debugf("bindNamedParameters() %s -> %s [%s]", typedval.getValue(), name, locs[i] + start);
-					typedval.getType().nullSafeSet( ps, typedval.getValue(),
-							locs[i] + start, session );
+				final Map.Entry e = (Map.Entry) iter.next();
+				final String name = (String) e.getKey();
+				final TypedValue typedval = (TypedValue) e.getValue();
+				final int[] locs = getNamedParameterLocs( name );
+				for ( int loc : locs ) {
+					LOG.debugf( "bindNamedParameters() %s -> %s [%s]", typedval.getValue(), name, loc + start );
+					typedval.getType().nullSafeSet(
+							ps,
+							typedval.getValue(),
+							loc + start,
+							session
+					);
 				}
 				result += locs.length;
 			}
 			return result;
 		}
-        return 0;
+
+		return 0;
 	}
 
 	protected void coordinateSharedCacheCleanup(SessionImplementor session) {
-		BulkOperationCleanupAction action = new BulkOperationCleanupAction( session, getCustomQuery().getQuerySpaces() );
+		final BulkOperationCleanupAction action = new BulkOperationCleanupAction( session, getCustomQuery().getQuerySpaces() );
 
 		if ( session.isEventSource() ) {
-			( ( EventSource ) session ).getActionQueue().addAction( action );
+			( (EventSource) session ).getActionQueue().addAction( action );
 		}
 		else {
 			action.getAfterTransactionCompletionProcess().doAfterTransactionCompletion( true, session );
 		}
 	}
 
-	public int performExecuteUpdate(QueryParameters queryParameters,
+	/**
+	 * Performs the execute query
+	 *
+	 * @param queryParameters The query parameters
+	 * @param session The session
+	 *
+	 * @return The number of affected rows as returned by the JDBC driver
+	 *
+	 * @throws HibernateException Indicates a problem performing the query execution
+	 */
+	public int performExecuteUpdate(
+			QueryParameters queryParameters,
 			SessionImplementor session) throws HibernateException {
 
 		coordinateSharedCacheCleanup( session );
 
-		if(queryParameters.isCallable()) {
+		if ( queryParameters.isCallable() ) {
 			throw new IllegalArgumentException("callable not yet supported for native queries");
 		}
 
 		int result = 0;
 		PreparedStatement ps;
 		try {
-			queryParameters.processFilters( this.customQuery.getSQL(),
-					session );
-			String sql = queryParameters.getFilteredSQL();
+			queryParameters.processFilters( this.customQuery.getSQL(), session );
+			final String sql = queryParameters.getFilteredSQL();
 
 			ps = session.getTransactionCoordinator().getJdbcCoordinator().getStatementPreparer().prepareStatement( sql, false );
 
 			try {
 				int col = 1;
-				col += bindPositionalParameters( ps, queryParameters, col,
-						session );
-				col += bindNamedParameters( ps, queryParameters
-						.getNamedParameters(), col, session );
-				result = ps.executeUpdate();
+				col += bindPositionalParameters( ps, queryParameters, col, session );
+				col += bindNamedParameters( ps, queryParameters.getNamedParameters(), col, session );
+				result = session.getTransactionCoordinator().getJdbcCoordinator().getResultSetReturn().executeUpdate( ps );
 			}
 			finally {
 				if ( ps != null ) {
-					ps.close();
+					session.getTransactionCoordinator().getJdbcCoordinator().release( ps );
 				}
 			}
 		}
 		catch (SQLException sqle) {
 			throw session.getFactory().getSQLExceptionHelper().convert(
-					sqle, "could not execute native bulk manipulation query", this.sourceQuery );
+					sqle,
+					"could not execute native bulk manipulation query",
+					this.sourceQuery
+			);
 		}
 
 		return result;

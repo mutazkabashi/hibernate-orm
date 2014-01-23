@@ -42,6 +42,7 @@ import org.hibernate.Hibernate;
 import org.hibernate.HibernateException;
 import org.hibernate.Query;
 import org.hibernate.QueryException;
+import org.hibernate.ScrollMode;
 import org.hibernate.ScrollableResults;
 import org.hibernate.Session;
 import org.hibernate.Transaction;
@@ -49,7 +50,9 @@ import org.hibernate.TypeMismatchException;
 import org.hibernate.cfg.Configuration;
 import org.hibernate.cfg.Environment;
 import org.hibernate.dialect.DB2Dialect;
+import org.hibernate.dialect.H2Dialect;
 import org.hibernate.dialect.HSQLDialect;
+import org.hibernate.dialect.AbstractHANADialect;
 import org.hibernate.dialect.IngresDialect;
 import org.hibernate.dialect.MySQLDialect;
 import org.hibernate.dialect.Oracle8iDialect;
@@ -61,6 +64,7 @@ import org.hibernate.dialect.Sybase11Dialect;
 import org.hibernate.dialect.SybaseASE15Dialect;
 import org.hibernate.dialect.SybaseAnywhereDialect;
 import org.hibernate.dialect.SybaseDialect;
+import org.hibernate.dialect.CUBRIDDialect;
 import org.hibernate.hql.internal.ast.ASTQueryTranslatorFactory;
 import org.hibernate.internal.util.StringHelper;
 import org.hibernate.persister.entity.DiscriminatorType;
@@ -76,6 +80,7 @@ import org.hibernate.test.cid.Order;
 import org.hibernate.test.cid.Product;
 import org.hibernate.testing.DialectChecks;
 import org.hibernate.testing.FailureExpected;
+import org.hibernate.testing.RequiresDialect;
 import org.hibernate.testing.RequiresDialectFeature;
 import org.hibernate.testing.SkipForDialect;
 import org.hibernate.testing.TestForIssue;
@@ -105,6 +110,11 @@ import static org.junit.Assert.fail;
  *
  * @author Steve
  */
+@SkipForDialect(
+        value = CUBRIDDialect.class,
+        comment = "As of verion 8.4.1 CUBRID doesn't support temporary tables. This test fails with" +
+                "HibernateException: cannot doAfterTransactionCompletion multi-table deletes using dialect not supporting temp tables"
+)
 public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	private static final Logger log = Logger.getLogger( ASTParserLoadingTest.class );
 
@@ -123,6 +133,7 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 				"hql/Image.hbm.xml",
 				"hql/ComponentContainer.hbm.xml",
 				"hql/VariousKeywordPropertyEntity.hbm.xml",
+				"hql/Constructor.hbm.xml",
 				"batchfetch/ProductLine.hbm.xml",
 				"cid/Customer.hbm.xml",
 				"cid/Order.hbm.xml",
@@ -159,6 +170,72 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 
 		s.getTransaction().commit();
 		s.close();
+	}
+
+	@Test
+	@TestForIssue( jiraKey = "HHH-8432" )
+	public void testExpandListParameter() {
+		final Object[] namesArray = new Object[] {
+				"ZOO 1", "ZOO 2", "ZOO 3", "ZOO 4", "ZOO 5", "ZOO 6", "ZOO 7",
+				"ZOO 8", "ZOO 9", "ZOO 10", "ZOO 11", "ZOO 12"
+		};
+		final Object[] citiesArray = new Object[] {
+				"City 1", "City 2", "City 3", "City 4", "City 5", "City 6", "City 7",
+				"City 8", "City 9", "City 10", "City 11", "City 12"
+		};
+
+		Session session = openSession();
+
+		session.getTransaction().begin();
+		Address address = new Address();
+		Zoo zoo = new Zoo( "ZOO 1", address );
+		address.setCity( "City 1" );
+		session.save( zoo );
+		session.getTransaction().commit();
+
+		session.clear();
+
+		session.getTransaction().begin();
+		List result = session.createQuery( "FROM Zoo z WHERE z.name IN (?1) and z.address.city IN (?11)" )
+				.setParameterList( "1", namesArray )
+				.setParameterList( "11", citiesArray )
+				.list();
+		assertEquals( 1, result.size() );
+		session.getTransaction().commit();
+
+		session.clear();
+
+		session.getTransaction().begin();
+		zoo = (Zoo) session.get( Zoo.class, zoo.getId() );
+		session.delete( zoo );
+		session.getTransaction().commit();
+
+		session.close();
+	}
+
+	@Test
+	@TestForIssue( jiraKey = "HHH-8699" )
+	public void testBooleanPredicate() {
+		final Session session = openSession();
+
+		session.getTransaction().begin();
+		final Constructor constructor = new Constructor();
+		session.save( constructor );
+		session.getTransaction().commit();
+
+		session.clear();
+		Constructor.resetConstructorExecutionCount();
+
+		session.getTransaction().begin();
+		final Constructor result = (Constructor) session.createQuery(
+				"select new Constructor( c.id, c.id is not null, c.id = c.id, c.id + 1, concat( c.id, 'foo' ) ) from Constructor c where c.id = :id"
+		).setParameter( "id", constructor.getId() ).uniqueResult();
+		session.getTransaction().commit();
+
+		assertEquals( 1, Constructor.getConstructorExecutionCount() );
+		assertEquals( new Constructor( constructor.getId(), true, true, constructor.getId() + 1, constructor.getId() + "foo" ), result );
+
+		session.close();
 	}
 
 	@Test
@@ -480,6 +557,33 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+	@TestForIssue( jiraKey = "HHH-2045" )
+	@RequiresDialect( H2Dialect.class )
+	public void testEmptyInList() {
+		Session session = openSession();
+		session.beginTransaction();
+		Human human = new Human();
+		human.setName( new Name( "Lukasz", null, "Antoniak" ) );
+		human.setNickName( "NONE" );
+		session.save( human );
+		session.getTransaction().commit();
+		session.close();
+
+		session = openSession();
+		session.beginTransaction();
+		List results = session.createQuery( "from Human h where h.nickName in ()" ).list();
+		assertEquals( 0, results.size() );
+		session.getTransaction().commit();
+		session.close();
+
+		session = openSession();
+		session.beginTransaction();
+		session.delete( human );
+		session.getTransaction().commit();
+		session.close();
+	}
+
+	@Test
 	public void testComponentNullnessChecks() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -518,6 +622,75 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		s.beginTransaction();
 		s.createQuery( "delete Human" ).executeUpdate();
 		s.getTransaction().commit();
+		s.close();
+	}
+
+	@Test
+	@TestForIssue( jiraKey = "HHH-4150" )
+	public void testSelectClauseCaseWithSum() {
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		Human h1 = new Human();
+		h1.setBodyWeight( 74.0f );
+		h1.setDescription( "Me" );
+		s.persist( h1 );
+
+		Human h2 = new Human();
+		h2.setBodyWeight( 125.0f );
+		h2.setDescription( "big persion #1" );
+		s.persist( h2 );
+
+		Human h3 = new Human();
+		h3.setBodyWeight( 110.0f );
+		h3.setDescription( "big persion #2" );
+		s.persist( h3 );
+
+		s.flush();
+
+		Number count = (Number) s.createQuery( "select sum(case when bodyWeight > 100 then 1 else 0 end) from Human" ).uniqueResult();
+		assertEquals( 2, count.intValue() );
+		count = (Number) s.createQuery( "select sum(case when bodyWeight > 100 then bodyWeight else 0 end) from Human" ).uniqueResult();
+		assertEquals( h2.getBodyWeight() + h3.getBodyWeight(), count.floatValue(), 0.001 );
+
+		t.rollback();
+		s.close();
+	}
+
+	@Test
+	@TestForIssue( jiraKey = "HHH-4150" )
+	public void testSelectClauseCaseWithCountDistinct() {
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		Human h1 = new Human();
+		h1.setBodyWeight( 74.0f );
+		h1.setDescription( "Me" );
+		h1.setNickName( "Oney" );
+		s.persist( h1 );
+
+		Human h2 = new Human();
+		h2.setBodyWeight( 125.0f );
+		h2.setDescription( "big persion" );
+		h2.setNickName( "big #1" );
+		s.persist( h2 );
+
+		Human h3 = new Human();
+		h3.setBodyWeight( 110.0f );
+		h3.setDescription( "big persion" );
+		h3.setNickName( "big #2" );
+		s.persist( h3 );
+
+		s.flush();
+
+		Number count = (Number) s.createQuery( "select count(distinct case when bodyWeight > 100 then description else null end) from Human" ).uniqueResult();
+		assertEquals( 1, count.intValue() );
+		count = (Number) s.createQuery( "select count(case when bodyWeight > 100 then description else null end) from Human" ).uniqueResult();
+		assertEquals( 2, count.intValue() );
+		count = (Number) s.createQuery( "select count(distinct case when bodyWeight > 100 then nickName else null end) from Human" ).uniqueResult();
+		assertEquals( 2, count.intValue() );
+
+		t.rollback();
 		s.close();
 	}
 
@@ -609,9 +782,17 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		else {
 			s.createQuery( "from Animal where lower(upper('foo') || upper(:bar)) like 'f%'" ).setString( "bar", "xyz" ).list();
 		}
-		if ( ! ( getDialect() instanceof PostgreSQLDialect|| getDialect() instanceof PostgreSQL81Dialect || getDialect() instanceof MySQLDialect ) ) {
-			s.createQuery( "from Animal where abs(cast(1 as float) - cast(:param as float)) = 1.0" ).setLong( "param", 1 ).list();
+		
+		if ( getDialect() instanceof AbstractHANADialect ) {
+			s.createQuery( "from Animal where abs(cast(1 as double) - cast(:param as double)) = 1.0" )
+					.setLong( "param", 1 ).list();
 		}
+		else if ( !( getDialect() instanceof PostgreSQLDialect || getDialect() instanceof PostgreSQL81Dialect
+				|| getDialect() instanceof MySQLDialect ) ) {
+			s.createQuery( "from Animal where abs(cast(1 as float) - cast(:param as float)) = 1.0" )
+					.setLong( "param", 1 ).list();
+		}
+
 		s.getTransaction().commit();
 		s.close();
 	}
@@ -971,7 +1152,11 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		s.createQuery( "from Human h where h.name = ('John', 'X', 'Doe')" ).list();
 		s.createQuery( "from Human h where ('John', 'X', 'Doe') = h.name" ).list();
 		s.createQuery( "from Human h where ('John', 'X', 'Doe') <> h.name" ).list();
-		s.createQuery( "from Human h where ('John', 'X', 'Doe') >= h.name" ).list();
+
+		// HANA only allows '=' and '<>'/'!='
+		if ( ! ( getDialect() instanceof AbstractHANADialect ) ) {
+			s.createQuery( "from Human h where ('John', 'X', 'Doe') >= h.name" ).list();
+		}
 
 		s.createQuery( "from Human h order by h.name" ).list();
 
@@ -1057,7 +1242,6 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	@FailureExpected( jiraKey = "unknown" )
 	public void testParameterTypeMismatch() {
 		Session s = openSession();
@@ -1335,7 +1519,13 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		// note: simply performing syntax and column/table resolution checking in the db
 		Session s = openSession();
 		s.beginTransaction();
-		s.createQuery( "from Animal where mother = :mother" ).setParameter( "mother", null ).list();
+		if ( getDialect() instanceof AbstractHANADialect ) {
+			s.createQuery( "from Animal where mother is null" ).list();
+		}
+		else {
+			s.createQuery( "from Animal where mother = :mother" ).setParameter( "mother", null ).list();
+		}
+
 		s.getTransaction().commit();
 		s.close();
 	}
@@ -1374,7 +1564,6 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	public void testArithmetic() {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -1692,7 +1881,6 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testNumericExpressionReturnTypes() {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -1819,6 +2007,13 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+    @SkipForDialect(
+            value = CUBRIDDialect.class,
+            comment = "As of version 8.4.1 CUBRID does not support temporary tables." +
+                    " This test somehow calls MultiTableDeleteExecutor which raises an" +
+                    " exception saying 'cannot doAfterTransactionCompletion multi-table" +
+                    " deletes using dialect not supporting temp tables'."
+    )
 	public void testParameterMixing() {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -1848,7 +2043,6 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testIndexParams() {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -1881,7 +2075,6 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 
 	@Test
     @SkipForDialect( value = SybaseASE15Dialect.class, jiraKey = "HHH-6424")
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	public void testAggregation() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -2418,7 +2611,7 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		Zoo zooRead = ( Zoo ) results.get( 0 );
 		assertEquals( zoo, zooRead );
 		assertTrue( Hibernate.isInitialized( zooRead.getMammals() ) );
-		Mammal mammalRead = ( Mammal ) ( ( Map ) zooRead.getMammals() ).get( "zebra" );
+		Mammal mammalRead = ( Mammal ) zooRead.getMammals().get( "zebra" );
 		assertEquals( mammal, mammalRead );
 		session.delete( mammalRead );
 		session.delete( zooRead );
@@ -2778,7 +2971,8 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		session = openSession();
 
 		ScrollableResults sr = session.createQuery( query )
-	     .setResultTransformer(Transformers.aliasToBean(Animal.class)).scroll();
+			     .setResultTransformer(Transformers.aliasToBean(Animal.class)).scroll();
+
 		assertTrue( "Incorrect result size", sr.next() );
 		assertTrue( "Incorrect return type", sr.get(0) instanceof Animal );
 		assertFalse( session.contains( sr.get( 0 ) ) );
@@ -2841,7 +3035,8 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		session = openSession();
 
 		ScrollableResults sr = session.createQuery( query )
-	     .setResultTransformer(Transformers.ALIAS_TO_ENTITY_MAP).scroll();
+				.setResultTransformer(Transformers.ALIAS_TO_ENTITY_MAP).scroll();
+
 		assertTrue( "Incorrect result size", sr.next() );
 		assertTrue( "Incorrect return type", sr.get(0) instanceof Map );
 		assertFalse( session.contains( sr.get( 0 ) ) );
@@ -2921,17 +3116,20 @@ public class ASTParserLoadingTest extends BaseCoreFunctionalTestCase {
 		 * PostgreSQL >= 8.3.7 typecasts are no longer automatically allowed
 		 * <link>http://www.postgresql.org/docs/current/static/release-8-3.html</link>
 		 */
-		if(getDialect() instanceof PostgreSQLDialect || getDialect() instanceof PostgreSQL81Dialect || getDialect() instanceof HSQLDialect){
+		if ( getDialect() instanceof PostgreSQLDialect || getDialect() instanceof PostgreSQL81Dialect
+				|| getDialect() instanceof HSQLDialect ) {
 			hql = "from Animal a where bit_length(str(a.bodyWeight)) = 24";
 		}
-		else{
+		else {
 			hql = "from Animal a where bit_length(a.bodyWeight) = 24";
 		}
 
 		session.createQuery(hql).list();
-		if(getDialect() instanceof PostgreSQLDialect || getDialect() instanceof PostgreSQL81Dialect || getDialect() instanceof HSQLDialect){
+		if ( getDialect() instanceof PostgreSQLDialect || getDialect() instanceof PostgreSQL81Dialect
+				|| getDialect() instanceof HSQLDialect ) {
 			hql = "select bit_length(str(a.bodyWeight)) from Animal a";
-		}else{
+		}
+		else {
 			hql = "select bit_length(a.bodyWeight) from Animal a";
 		}
 

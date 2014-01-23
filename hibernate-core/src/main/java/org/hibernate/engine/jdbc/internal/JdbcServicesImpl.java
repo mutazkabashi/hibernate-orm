@@ -34,13 +34,19 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-import org.jboss.logging.Logger;
-
+import org.hibernate.HibernateException;
 import org.hibernate.MultiTenancyStrategy;
 import org.hibernate.cfg.Environment;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.engine.jdbc.LobCreationContext;
 import org.hibernate.engine.jdbc.LobCreator;
+import org.hibernate.engine.jdbc.connections.spi.ConnectionProvider;
+import org.hibernate.engine.jdbc.connections.spi.MultiTenantConnectionProvider;
+import org.hibernate.engine.jdbc.cursor.internal.StandardRefCursorSupport;
+import org.hibernate.engine.jdbc.dialect.spi.DatabaseMetaDataDialectResolutionInfoAdapter;
+import org.hibernate.engine.jdbc.dialect.spi.DialectFactory;
+import org.hibernate.engine.jdbc.dialect.spi.DialectResolutionInfo;
+import org.hibernate.engine.jdbc.dialect.spi.DialectResolutionInfoSource;
 import org.hibernate.engine.jdbc.spi.ExtractedDatabaseMetaData;
 import org.hibernate.engine.jdbc.spi.JdbcConnectionAccess;
 import org.hibernate.engine.jdbc.spi.JdbcServices;
@@ -48,17 +54,15 @@ import org.hibernate.engine.jdbc.spi.ResultSetWrapper;
 import org.hibernate.engine.jdbc.spi.SchemaNameResolver;
 import org.hibernate.engine.jdbc.spi.SqlExceptionHelper;
 import org.hibernate.engine.jdbc.spi.SqlStatementLogger;
+import org.hibernate.engine.jdbc.spi.TypeInfo;
 import org.hibernate.exception.internal.SQLExceptionTypeDelegate;
 import org.hibernate.exception.internal.SQLStateConversionDelegate;
 import org.hibernate.exception.internal.StandardSQLExceptionConverter;
 import org.hibernate.exception.spi.SQLExceptionConverter;
+import org.hibernate.internal.CoreLogging;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.internal.util.ReflectHelper;
 import org.hibernate.internal.util.config.ConfigurationHelper;
-import org.hibernate.engine.jdbc.connections.spi.ConnectionProvider;
-import org.hibernate.engine.jdbc.connections.spi.MultiTenantConnectionProvider;
-import org.hibernate.engine.jdbc.cursor.internal.StandardRefCursorSupport;
-import org.hibernate.engine.jdbc.dialect.spi.DialectFactory;
 import org.hibernate.service.spi.Configurable;
 import org.hibernate.service.spi.ServiceRegistryAwareService;
 import org.hibernate.service.spi.ServiceRegistryImplementor;
@@ -69,7 +73,7 @@ import org.hibernate.service.spi.ServiceRegistryImplementor;
  * @author Steve Ebersole
  */
 public class JdbcServicesImpl implements JdbcServices, ServiceRegistryAwareService, Configurable {
-    private static final CoreMessageLogger LOG = Logger.getMessageLogger(CoreMessageLogger.class, JdbcServicesImpl.class.getName());
+	private static final CoreMessageLogger LOG = CoreLogging.messageLogger( JdbcServicesImpl.class );
 
 	private ServiceRegistryImplementor serviceRegistry;
 
@@ -105,7 +109,7 @@ public class JdbcServicesImpl implements JdbcServices, ServiceRegistryAwareServi
 		boolean lobLocatorUpdateCopy = false;
 		String catalogName = null;
 		String schemaName = null;
-		LinkedHashSet<TypeInfo> typeInfoSet = new LinkedHashSet<TypeInfo>();
+		final LinkedHashSet<TypeInfo> typeInfoSet = new LinkedHashSet<TypeInfo>();
 
 		// 'hibernate.temp.use_jdbc_metadata_defaults' is a temporary magic value.
 		// The need for it is intended to be alleviated with future development, thus it is
@@ -114,24 +118,34 @@ public class JdbcServicesImpl implements JdbcServices, ServiceRegistryAwareServi
 		// it is used to control whether we should consult the JDBC metadata to determine
 		// certain Settings default values; it is useful to *not* do this when the database
 		// may not be available (mainly in tools usage).
-		boolean useJdbcMetadata = ConfigurationHelper.getBoolean( "hibernate.temp.use_jdbc_metadata_defaults", configValues, true );
+		final boolean useJdbcMetadata = ConfigurationHelper.getBoolean( "hibernate.temp.use_jdbc_metadata_defaults", configValues, true );
 		if ( useJdbcMetadata ) {
 			try {
-				Connection connection = jdbcConnectionAccess.obtainConnection();
+				final Connection connection = jdbcConnectionAccess.obtainConnection();
 				try {
-					DatabaseMetaData meta = connection.getMetaData();
-					if(LOG.isDebugEnabled()) {
-						LOG.debugf( "Database ->\n" + "       name : %s\n" + "    version : %s\n" + "      major : %s\n" + "      minor : %s",
-									meta.getDatabaseProductName(),
-									meta.getDatabaseProductVersion(),
-									meta.getDatabaseMajorVersion(),
-									meta.getDatabaseMinorVersion()
+					final DatabaseMetaData meta = connection.getMetaData();
+					if ( LOG.isDebugEnabled() ) {
+						LOG.debugf(
+								"Database ->\n"
+										+ "       name : %s\n"
+										+ "    version : %s\n"
+										+ "      major : %s\n"
+										+ "      minor : %s",
+								meta.getDatabaseProductName(),
+								meta.getDatabaseProductVersion(),
+								meta.getDatabaseMajorVersion(),
+								meta.getDatabaseMinorVersion()
 						);
-						LOG.debugf( "Driver ->\n" + "       name : %s\n" + "    version : %s\n" + "      major : %s\n" + "      minor : %s",
-									meta.getDriverName(),
-									meta.getDriverVersion(),
-									meta.getDriverMajorVersion(),
-									meta.getDriverMinorVersion()
+						LOG.debugf(
+								"Driver ->\n"
+										+ "       name : %s\n"
+										+ "    version : %s\n"
+										+ "      major : %s\n"
+										+ "      minor : %s",
+								meta.getDriverName(),
+								meta.getDriverVersion(),
+								meta.getDriverMajorVersion(),
+								meta.getDriverMinorVersion()
 						);
 						LOG.debugf( "JDBC version : %s.%s", meta.getJDBCMajorVersion(), meta.getJDBCMinorVersion() );
 					}
@@ -146,12 +160,28 @@ public class JdbcServicesImpl implements JdbcServices, ServiceRegistryAwareServi
 					extraKeywordsString = meta.getSQLKeywords();
 					sqlStateType = meta.getSQLStateType();
 					lobLocatorUpdateCopy = meta.locatorsUpdateCopy();
-					typeInfoSet.addAll( TypeInfoExtracter.extractTypeInfo( meta ) );
+					typeInfoSet.addAll( TypeInfo.extractTypeInfo( meta ) );
 
-					dialect = dialectFactory.buildDialect( configValues, connection );
+					dialect = dialectFactory.buildDialect(
+							configValues,
+							new DialectResolutionInfoSource() {
+								@Override
+								public DialectResolutionInfo getDialectResolutionInfo() {
+									try {
+										return new DatabaseMetaDataDialectResolutionInfoAdapter( connection.getMetaData() );
+									}
+									catch ( SQLException sqlException ) {
+										throw new HibernateException(
+												"Unable to access java.sql.DatabaseMetaData to determine appropriate Dialect to use",
+												sqlException
+										);
+									}
+								}
+							}
+					);
 
 					catalogName = connection.getCatalog();
-					SchemaNameResolver schemaNameResolver = determineExplicitSchemaNameResolver( configValues );
+					final SchemaNameResolver schemaNameResolver = determineExplicitSchemaNameResolver( configValues );
 					if ( schemaNameResolver == null ) {
 // todo : add dialect method
 //						schemaNameResolver = dialect.getSchemaNameResolver();
@@ -284,19 +314,23 @@ public class JdbcServicesImpl implements JdbcServices, ServiceRegistryAwareServi
 	}
 
 
-	// todo : add to Environment
+	/**
+	 * A constant naming the setting used to identify the {@link SchemaNameResolver} to use
+	 * <p/>
+	 * TODO : add to Environment
+	 */
 	public static final String SCHEMA_NAME_RESOLVER = "hibernate.schema_name_resolver";
 
 	private SchemaNameResolver determineExplicitSchemaNameResolver(Map configValues) {
-		Object setting = configValues.get( SCHEMA_NAME_RESOLVER );
+		final Object setting = configValues.get( SCHEMA_NAME_RESOLVER );
 		if ( SchemaNameResolver.class.isInstance( setting ) ) {
 			return (SchemaNameResolver) setting;
 		}
 
-		String resolverClassName = (String) setting;
+		final String resolverClassName = (String) setting;
 		if ( resolverClassName != null ) {
 			try {
-				Class resolverClass = ReflectHelper.classForName( resolverClassName, getClass() );
+				final Class resolverClass = ReflectHelper.classForName( resolverClassName, getClass() );
 				return (SchemaNameResolver) ReflectHelper.getDefaultConstructor( resolverClass ).newInstance();
 			}
 			catch ( ClassNotFoundException e ) {
@@ -313,7 +347,7 @@ public class JdbcServicesImpl implements JdbcServices, ServiceRegistryAwareServi
 	}
 
 	private Set<String> parseKeywords(String extraKeywordsString) {
-		Set<String> keywordSet = new HashSet<String>();
+		final Set<String> keywordSet = new HashSet<String>();
 		keywordSet.addAll( Arrays.asList( extraKeywordsString.split( "," ) ) );
 		return keywordSet;
 	}

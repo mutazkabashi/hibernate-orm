@@ -26,7 +26,7 @@ package org.hibernate.dialect;
 import java.sql.Types;
 
 import org.hibernate.type.descriptor.sql.BlobTypeDescriptor;
-import org.hibernate.type.descriptor.sql.LongVarbinaryTypeDescriptor;
+import org.hibernate.type.descriptor.sql.ClobTypeDescriptor;
 import org.hibernate.type.descriptor.sql.SqlTypeDescriptor;
 
 
@@ -36,24 +36,28 @@ import org.hibernate.type.descriptor.sql.SqlTypeDescriptor;
  * @author Brett Meyer
  */
 public class SybaseDialect extends AbstractTransactSQLDialect {
-	
 	private static final int PARAM_LIST_SIZE_LIMIT = 250000;
 
-	/* (non-Javadoc)
-		 * @see org.hibernate.dialect.Dialect#getInExpressionCountLimit()
-		 */
 	@Override
 	public int getInExpressionCountLimit() {
 		return PARAM_LIST_SIZE_LIMIT;
 	}
 	
 	@Override
-	public boolean supportsNotNullUnique() {
-		return false;
+	protected SqlTypeDescriptor getSqlTypeDescriptorOverride(int sqlCode) {
+		switch (sqlCode) {
+		case Types.BLOB:
+			return BlobTypeDescriptor.PRIMITIVE_ARRAY_BINDING;
+		case Types.CLOB:
+			// Some Sybase drivers cannot support getClob.  See HHH-7889
+			return ClobTypeDescriptor.STREAM_BINDING_EXTRACTING;
+		default:
+			return super.getSqlTypeDescriptorOverride( sqlCode );
+		}
 	}
 	
 	@Override
-	protected SqlTypeDescriptor getSqlTypeDescriptorOverride(int sqlCode) {
-        return sqlCode == Types.BLOB ? BlobTypeDescriptor.PRIMITIVE_ARRAY_BINDING : super.getSqlTypeDescriptorOverride( sqlCode );
+	public String getNullColumnString() {
+		return " null";
 	}
 }

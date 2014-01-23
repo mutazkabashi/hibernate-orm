@@ -23,30 +23,34 @@
  */
 package org.hibernate.test.hql;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
 import junit.framework.AssertionFailedError;
-import org.junit.Test;
 
 import org.hibernate.QueryException;
 import org.hibernate.Session;
 import org.hibernate.Transaction;
+import org.hibernate.dialect.CUBRIDDialect;
 import org.hibernate.dialect.H2Dialect;
 import org.hibernate.dialect.MySQLDialect;
+import org.hibernate.exception.ConstraintViolationException;
 import org.hibernate.id.BulkInsertionCapableIdentifierGenerator;
 import org.hibernate.id.IdentifierGenerator;
 import org.hibernate.persister.entity.EntityPersister;
 import org.hibernate.testing.DialectChecks;
 import org.hibernate.testing.RequiresDialectFeature;
+import org.hibernate.testing.SkipForDialect;
 import org.hibernate.testing.SkipLog;
+import org.hibernate.testing.TestForIssue;
 import org.hibernate.testing.junit4.BaseCoreFunctionalTestCase;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import org.junit.Test;
 
 /**
  * Tests execution of bulk UPDATE/DELETE statements through the new AST parser.
@@ -67,6 +71,10 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 				"hql/BooleanLiteralEntity.hbm.xml",
 				"hql/CompositeIdEntity.hbm.xml"
 		};
+	}
+
+	protected Class<?>[] getAnnotatedClasses() {
+		return new Class<?>[] { Farm.class, Crop.class };
 	}
 
 	@Test
@@ -115,6 +123,11 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+    @SkipForDialect(
+            value = CUBRIDDialect.class,
+            comment = "As of verion 8.4.1 CUBRID doesn't support temporary tables. This test fails with" +
+                    "HibernateException: cannot doAfterTransactionCompletion multi-table deletes using dialect not supporting temp tables"
+    )
 	public void testTempTableGenerationIsolation() throws Throwable{
 		Session s = openSession();
 		s.beginTransaction();
@@ -199,6 +212,126 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 
 		data.cleanup();
 	}
+
+	@Test
+    public void testSelectWithNamedParamProjection() {
+        Session s = openSession();
+        try {
+            s.createQuery("select :someParameter, id from Car");
+            fail("Should throw an unsupported exception");
+        } catch(QueryException q) {
+            // allright
+        } finally {
+            s.close();
+        }
+    }
+
+	@Test
+    public void testSimpleInsertWithNamedParam() {
+		TestData data = new TestData();
+		data.prepare();
+
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		org.hibernate.Query q = s.createQuery( "insert into Pickup (id, owner, vin) select id, :owner, vin from Car" );
+		q.setParameter("owner", "owner");
+
+		q.executeUpdate();
+
+		t.commit();
+		t = s.beginTransaction();
+
+		s.createQuery( "delete Vehicle" ).executeUpdate();
+
+		t.commit();
+		s.close();
+
+		data.cleanup();
+	}
+
+	@Test
+    public void testInsertWithMultipleNamedParams() {
+		TestData data = new TestData();
+		data.prepare();
+
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		org.hibernate.Query q = s.createQuery( "insert into Pickup (id, owner, vin) select :id, owner, :vin from Car" );
+		q.setParameter("id", 5l);
+        q.setParameter("vin", "some");
+
+		q.executeUpdate();
+
+		t.commit();
+		t = s.beginTransaction();
+
+		s.createQuery( "delete Vehicle" ).executeUpdate();
+
+		t.commit();
+		s.close();
+
+		data.cleanup();
+	}
+	
+	@Test
+    public void testInsertWithSubqueriesAndNamedParams() {
+		TestData data = new TestData();
+		data.prepare();
+
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		org.hibernate.Query q = s.createQuery( "insert into Pickup (id, owner, vin) select :id, (select a.description from Animal a where a.description = :description), :vin from Car" );
+		q.setParameter("id", 5l);
+        q.setParameter("description", "Frog");
+        q.setParameter("vin", "some");
+
+		q.executeUpdate();
+
+		t.commit();
+		t = s.beginTransaction();
+
+        try {
+            org.hibernate.Query q1 = s.createQuery( "insert into Pickup (id, owner, vin) select :id, (select :description from Animal a where a.description = :description), :vin from Car" );
+            fail("Unsupported exception should have been thrown");
+        } catch(QueryException e) {
+            assertTrue(e.getMessage().indexOf("Use of parameters in subqueries of INSERT INTO DML statements is not supported.") > -1);
+        }
+
+        t.commit();
+        t = s.beginTransaction();
+
+		s.createQuery( "delete Vehicle" ).executeUpdate();
+
+		t.commit();
+		s.close();
+
+		data.cleanup();
+	}
+
+	@Test
+    public void testSimpleInsertTypeMismatchException() {
+
+        Session s = openSession();
+        try {
+            org.hibernate.Query q = s.createQuery( "insert into Pickup (id, owner, vin) select id, :owner, id from Car" );
+            fail("Parameter type mismatch but no exception thrown");
+        } catch (Throwable throwable) {
+            assertTrue(throwable instanceof QueryException);
+            String m = throwable.getMessage();
+            // insertion type [org.hibernate.type.StringType@21e3cc77] and selection type [org.hibernate.type.LongType@7284aa02] at position 2 are not compatible [insert into Pickup (id, owner, vin) select id, :owner, id from org.hibernate.test.hql.Car]
+            int st = m.indexOf("org.hibernate.type.StringType");
+            int lt = m.indexOf("org.hibernate.type.LongType");
+            assertTrue("type causing error not reported", st > -1);
+            assertTrue("type causing error not reported", lt > -1);
+            assertTrue(lt > st);
+            assertTrue("wrong position of type error reported", m.indexOf("position 2") > -1);
+        } finally {
+            s.close();
+        }
+    }
 
 	@Test
 	public void testSimpleNativeSQLInsert() {
@@ -407,7 +540,6 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 		s.close();
 	}
 
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	@Test
 	public void testInsertWithGeneratedVersionAndId() {
 		// Make sure the env supports bulk inserts with generated ids...
@@ -457,7 +589,6 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	@RequiresDialectFeature(
 			value = DialectChecks.SupportsParametersInInsertSelectCheck.class,
 			comment = "dialect does not support parameter in INSERT ... SELECT"
@@ -523,6 +654,11 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+    @SkipForDialect(
+            value = CUBRIDDialect.class,
+            comment = "As of verion 8.4.1 CUBRID doesn't support temporary tables. This test fails with" +
+                    "HibernateException: cannot doAfterTransactionCompletion multi-table deletes using dialect not supporting temp tables"
+    )
 	public void testInsertWithSelectListUsingJoins() {
 		// this is just checking parsing and syntax...
 		Session s = openSession();
@@ -687,7 +823,6 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	public void testUpdateOnComponent() {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -726,6 +861,11 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+    @SkipForDialect(
+            value = CUBRIDDialect.class,
+            comment = "As of verion 8.4.1 CUBRID doesn't support temporary tables. This test fails with" +
+                    "HibernateException: cannot doAfterTransactionCompletion multi-table deletes using dialect not supporting temp tables"
+    )
 	public void testUpdateOnManyToOne() {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -773,7 +913,6 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	public void testUpdateOnDiscriminatorSubclass() {
 		TestData data = new TestData();
 		data.prepare();
@@ -998,7 +1137,6 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryUnboxing"})
 	@RequiresDialectFeature(
 			value = DialectChecks.HasSelfReferentialForeignKeyBugCheck.class,
 			comment = "self referential FK bug"
@@ -1157,6 +1295,11 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 	}
 
 	@Test
+    @SkipForDialect(
+            value = CUBRIDDialect.class,
+            comment = "As of verion 8.4.1 CUBRID doesn't support temporary tables. This test fails with" +
+                    "HibernateException: cannot doAfterTransactionCompletion multi-table deletes using dialect not supporting temp tables"
+    )
 	public void testDeleteWithMetadataWhereFragments() throws Throwable {
 		Session s = openSession();
 		Transaction t = s.beginTransaction();
@@ -1199,6 +1342,75 @@ public class BulkManipulationTest extends BaseCoreFunctionalTestCase {
 
 		t.commit();
 		s.close();
+	}
+	
+	@Test
+	@TestForIssue( jiraKey = "HHH-8476" )
+	public void testManyToManyBulkDelete() {
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		Farm farm1 = new Farm();
+		farm1.setName( "farm1" );
+		Crop crop = new Crop();
+		crop.setName( "crop1" );
+		farm1.setCrops( new ArrayList() );
+		farm1.getCrops().add( crop );
+		s.save( farm1 );
+
+		Farm farm2 = new Farm();
+		farm2.setName( "farm2" );
+		farm2.setCrops( new ArrayList() );
+		farm2.getCrops().add( crop );
+		s.save( farm2 );
+		
+		s.flush();
+		
+		try {
+			s.createQuery( "delete from Farm f where f.name='farm1'" ).executeUpdate();
+			assertEquals( s.createQuery( "from Farm" ).list().size(), 1 );
+			s.createQuery( "delete from Farm" ).executeUpdate();
+			assertEquals( s.createQuery( "from Farm" ).list().size(), 0 );
+		}
+		catch (ConstraintViolationException cve) {
+			fail("The join table was not cleared prior to the bulk delete.");
+		}
+		finally {
+			t.rollback();
+			s.close();
+		}
+	}
+	
+	@Test
+	@TestForIssue( jiraKey = "HHH-1917" )
+	public void testManyToManyBulkDeleteMultiTable() {
+		Session s = openSession();
+		Transaction t = s.beginTransaction();
+
+		Human friend = new Human();
+		friend.setName( new Name( "Bob", 'B', "Bobbert" ) );
+		s.save( friend );
+		
+		Human brett = new Human();
+		brett.setName( new Name( "Brett", 'E', "Meyer" ) );
+		brett.setFriends( new ArrayList() );
+		brett.getFriends().add( friend );
+		s.save( brett );
+		
+		s.flush();
+		
+		try {
+			// multitable (joined subclass)
+			s.createQuery( "delete from Human" ).executeUpdate();
+			assertEquals( s.createQuery( "from Human" ).list().size(), 0 );
+		}
+		catch (ConstraintViolationException cve) {
+			fail("The join table was not cleared prior to the bulk delete.");
+		}
+		finally {
+			t.rollback();
+			s.close();
+		}
 	}
 
 	private class TestData {

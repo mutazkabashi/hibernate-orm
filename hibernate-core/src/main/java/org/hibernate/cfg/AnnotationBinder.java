@@ -35,10 +35,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+
 import javax.persistence.Basic;
 import javax.persistence.Cacheable;
 import javax.persistence.CollectionTable;
 import javax.persistence.Column;
+import javax.persistence.DiscriminatorColumn;
 import javax.persistence.DiscriminatorType;
 import javax.persistence.DiscriminatorValue;
 import javax.persistence.ElementCollection;
@@ -67,6 +69,8 @@ import javax.persistence.NamedNativeQueries;
 import javax.persistence.NamedNativeQuery;
 import javax.persistence.NamedQueries;
 import javax.persistence.NamedQuery;
+import javax.persistence.NamedStoredProcedureQueries;
+import javax.persistence.NamedStoredProcedureQuery;
 import javax.persistence.OneToMany;
 import javax.persistence.OneToOne;
 import javax.persistence.OrderColumn;
@@ -81,8 +85,6 @@ import javax.persistence.TableGenerator;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.AnnotationException;
 import org.hibernate.AssertionFailure;
 import org.hibernate.EntityMode;
@@ -96,6 +98,7 @@ import org.hibernate.annotations.CascadeType;
 import org.hibernate.annotations.Check;
 import org.hibernate.annotations.CollectionId;
 import org.hibernate.annotations.Columns;
+import org.hibernate.annotations.DiscriminatorFormula;
 import org.hibernate.annotations.DiscriminatorOptions;
 import org.hibernate.annotations.Fetch;
 import org.hibernate.annotations.FetchProfile;
@@ -111,6 +114,7 @@ import org.hibernate.annotations.GenericGenerators;
 import org.hibernate.annotations.Index;
 import org.hibernate.annotations.LazyToOne;
 import org.hibernate.annotations.LazyToOneOption;
+import org.hibernate.annotations.ListIndexBase;
 import org.hibernate.annotations.ManyToAny;
 import org.hibernate.annotations.MapKeyType;
 import org.hibernate.annotations.NaturalId;
@@ -125,12 +129,15 @@ import org.hibernate.annotations.Parameter;
 import org.hibernate.annotations.Parent;
 import org.hibernate.annotations.Proxy;
 import org.hibernate.annotations.Sort;
+import org.hibernate.annotations.SortComparator;
+import org.hibernate.annotations.SortNatural;
 import org.hibernate.annotations.Source;
 import org.hibernate.annotations.Tuplizer;
 import org.hibernate.annotations.Tuplizers;
 import org.hibernate.annotations.TypeDef;
 import org.hibernate.annotations.TypeDefs;
 import org.hibernate.annotations.Where;
+import org.hibernate.annotations.common.reflection.ClassLoadingException;
 import org.hibernate.annotations.common.reflection.ReflectionManager;
 import org.hibernate.annotations.common.reflection.XAnnotatedElement;
 import org.hibernate.annotations.common.reflection.XClass;
@@ -147,7 +154,7 @@ import org.hibernate.cfg.annotations.PropertyBinder;
 import org.hibernate.cfg.annotations.QueryBinder;
 import org.hibernate.cfg.annotations.SimpleValueBinder;
 import org.hibernate.cfg.annotations.TableBinder;
-import org.hibernate.engine.internal.Versioning;
+import org.hibernate.engine.OptimisticLockStyle;
 import org.hibernate.engine.spi.FilterDefinition;
 import org.hibernate.id.MultipleHiLoPerTableGenerator;
 import org.hibernate.id.PersistentIdentifierGenerator;
@@ -155,8 +162,11 @@ import org.hibernate.id.SequenceHiLoGenerator;
 import org.hibernate.id.TableHiLoGenerator;
 import org.hibernate.id.enhanced.SequenceStyleGenerator;
 import org.hibernate.internal.CoreMessageLogger;
+import org.hibernate.internal.util.StringHelper;
+import org.hibernate.loader.PropertyPath;
 import org.hibernate.mapping.Any;
 import org.hibernate.mapping.Component;
+import org.hibernate.mapping.Constraint;
 import org.hibernate.mapping.DependantValue;
 import org.hibernate.mapping.IdGenerator;
 import org.hibernate.mapping.Join;
@@ -170,6 +180,7 @@ import org.hibernate.mapping.SingleTableSubclass;
 import org.hibernate.mapping.Subclass;
 import org.hibernate.mapping.ToOne;
 import org.hibernate.mapping.UnionSubclass;
+import org.jboss.logging.Logger;
 
 /**
  * JSR 175 annotation binder which reads the annotations from classes, applies the
@@ -203,6 +214,9 @@ public final class AnnotationBinder {
 
 	public static void bindDefaults(Mappings mappings) {
 		Map defaults = mappings.getReflectionManager().getDefaults();
+
+		// id generators ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 		{
 			List<SequenceGenerator> anns = ( List<SequenceGenerator> ) defaults.get( SequenceGenerator.class );
 			if ( anns != null ) {
@@ -225,6 +239,9 @@ public final class AnnotationBinder {
 				}
 			}
 		}
+
+		// queries ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 		{
 			List<NamedQuery> anns = ( List<NamedQuery> ) defaults.get( NamedQuery.class );
 			if ( anns != null ) {
@@ -241,11 +258,35 @@ public final class AnnotationBinder {
 				}
 			}
 		}
+
+		// result-set-mappings ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 		{
 			List<SqlResultSetMapping> anns = ( List<SqlResultSetMapping> ) defaults.get( SqlResultSetMapping.class );
 			if ( anns != null ) {
 				for ( SqlResultSetMapping ann : anns ) {
 					QueryBinder.bindSqlResultsetMapping( ann, mappings, true );
+				}
+			}
+		}
+
+		// stored procs ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+		{
+			final List<NamedStoredProcedureQuery> annotations =
+					(List<NamedStoredProcedureQuery>) defaults.get( NamedStoredProcedureQuery.class );
+			if ( annotations != null ) {
+				for ( NamedStoredProcedureQuery annotation : annotations ) {
+					bindNamedStoredProcedureQuery( mappings, annotation, true );
+				}
+			}
+		}
+		{
+			final List<NamedStoredProcedureQueries> annotations =
+					(List<NamedStoredProcedureQueries>) defaults.get( NamedStoredProcedureQueries.class );
+			if ( annotations != null ) {
+				for ( NamedStoredProcedureQueries annotation : annotations ) {
+					bindNamedStoredProcedureQueries( mappings, annotation, true );
 				}
 			}
 		}
@@ -255,6 +296,10 @@ public final class AnnotationBinder {
 		XPackage pckg;
 		try {
 			pckg = mappings.getReflectionManager().packageForName( packageName );
+		}
+		catch (ClassLoadingException e) {
+			LOG.packageNotFound( packageName );
+			return;
 		}
 		catch ( ClassNotFoundException cnf ) {
 			LOG.packageNotFound( packageName );
@@ -353,6 +398,30 @@ public final class AnnotationBinder {
 					org.hibernate.annotations.NamedNativeQueries.class
 			);
 			QueryBinder.bindNativeQueries( ann, mappings );
+		}
+
+		// NamedStoredProcedureQuery handling ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+		bindNamedStoredProcedureQuery( mappings, annotatedElement.getAnnotation( NamedStoredProcedureQuery.class ), false );
+
+		// NamedStoredProcedureQueries handling ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+		bindNamedStoredProcedureQueries(
+				mappings,
+				annotatedElement.getAnnotation( NamedStoredProcedureQueries.class ),
+				false
+		);
+	}
+
+	private static void bindNamedStoredProcedureQueries(Mappings mappings, NamedStoredProcedureQueries annotation, boolean isDefault) {
+		if ( annotation != null ) {
+			for ( NamedStoredProcedureQuery queryAnnotation : annotation.value() ) {
+				bindNamedStoredProcedureQuery( mappings, queryAnnotation, isDefault );
+			}
+		}
+	}
+
+	private static void bindNamedStoredProcedureQuery(Mappings mappings, NamedStoredProcedureQuery annotation, boolean isDefault) {
+		if ( annotation != null ) {
+			QueryBinder.bindNamedStoredProcedureQuery( annotation, mappings, isDefault );
 		}
 	}
 
@@ -556,8 +625,9 @@ public final class AnnotationBinder {
 		String table = ""; //might be no @Table annotation on the annotated class
 		String catalog = "";
 		List<UniqueConstraintHolder> uniqueConstraints = new ArrayList<UniqueConstraintHolder>();
+		javax.persistence.Table tabAnn = null;
 		if ( clazzToProcess.isAnnotationPresent( javax.persistence.Table.class ) ) {
-			javax.persistence.Table tabAnn = clazzToProcess.getAnnotation( javax.persistence.Table.class );
+			tabAnn = clazzToProcess.getAnnotation( javax.persistence.Table.class );
 			table = tabAnn.name();
 			schema = tabAnn.schema();
 			catalog = tabAnn.catalog();
@@ -567,11 +637,26 @@ public final class AnnotationBinder {
 		Ejb3JoinColumn[] inheritanceJoinedColumns = makeInheritanceJoinColumns(
 				clazzToProcess, mappings, inheritanceState, superEntity
 		);
-		Ejb3DiscriminatorColumn discriminatorColumn = null;
+
+		final Ejb3DiscriminatorColumn discriminatorColumn;
 		if ( InheritanceType.SINGLE_TABLE.equals( inheritanceState.getType() ) ) {
-			discriminatorColumn = processDiscriminatorProperties(
-					clazzToProcess, mappings, inheritanceState, entityBinder
+			discriminatorColumn = processSingleTableDiscriminatorProperties(
+					clazzToProcess,
+					mappings,
+					inheritanceState,
+					entityBinder
 			);
+		}
+		else if ( InheritanceType.JOINED.equals( inheritanceState.getType() ) ) {
+			discriminatorColumn = processJoinedDiscriminatorProperties(
+					clazzToProcess,
+					mappings,
+					inheritanceState,
+					entityBinder
+			);
+		}
+		else {
+			discriminatorColumn = null;
 		}
 
 		entityBinder.setProxy( clazzToProcess.getAnnotation( Proxy.class ) );
@@ -617,46 +702,71 @@ public final class AnnotationBinder {
 
 		OnDelete onDeleteAnn = clazzToProcess.getAnnotation( OnDelete.class );
 		boolean onDeleteAppropriate = false;
-		if ( InheritanceType.JOINED.equals( inheritanceState.getType() ) && inheritanceState.hasParents() ) {
-			onDeleteAppropriate = true;
-			final JoinedSubclass jsc = ( JoinedSubclass ) persistentClass;
-			SimpleValue key = new DependantValue( mappings, jsc.getTable(), jsc.getIdentifier() );
-			jsc.setKey( key );
-			ForeignKey fk = clazzToProcess.getAnnotation( ForeignKey.class );
-			if ( fk != null && !BinderHelper.isEmptyAnnotationValue( fk.name() ) ) {
-				key.setForeignKeyName( fk.name() );
-			}
-			if ( onDeleteAnn != null ) {
-				key.setCascadeDeleteEnabled( OnDeleteAction.CASCADE.equals( onDeleteAnn.action() ) );
-			}
-			else {
-				key.setCascadeDeleteEnabled( false );
-			}
-			//we are never in a second pass at that stage, so queue it
-			SecondPass sp = new JoinedSubclassFkSecondPass( jsc, inheritanceJoinedColumns, key, mappings );
-			mappings.addSecondPass( sp );
-			mappings.addSecondPass( new CreateKeySecondPass( jsc ) );
 
+		// todo : sucks that this is separate from RootClass distinction
+		final boolean isInheritanceRoot = !inheritanceState.hasParents();
+		final boolean hasSubclasses = inheritanceState.hasSiblings();
+
+		if ( InheritanceType.JOINED.equals( inheritanceState.getType() ) ) {
+			if ( inheritanceState.hasParents() ) {
+				onDeleteAppropriate = true;
+				final JoinedSubclass jsc = ( JoinedSubclass ) persistentClass;
+				SimpleValue key = new DependantValue( mappings, jsc.getTable(), jsc.getIdentifier() );
+				jsc.setKey( key );
+				ForeignKey fk = clazzToProcess.getAnnotation( ForeignKey.class );
+				if ( fk != null && !BinderHelper.isEmptyAnnotationValue( fk.name() ) ) {
+					key.setForeignKeyName( fk.name() );
+				}
+				if ( onDeleteAnn != null ) {
+					key.setCascadeDeleteEnabled( OnDeleteAction.CASCADE.equals( onDeleteAnn.action() ) );
+				}
+				else {
+					key.setCascadeDeleteEnabled( false );
+				}
+				//we are never in a second pass at that stage, so queue it
+				SecondPass sp = new JoinedSubclassFkSecondPass( jsc, inheritanceJoinedColumns, key, mappings );
+				mappings.addSecondPass( sp );
+				mappings.addSecondPass( new CreateKeySecondPass( jsc ) );
+			}
+
+			if ( isInheritanceRoot ) {
+				// the class we are processing is the root of the hierarchy, see if we had a discriminator column
+				// (it is perfectly valid for joined subclasses to not have discriminators).
+				if ( discriminatorColumn != null ) {
+					// we have a discriminator column
+					if ( hasSubclasses || !discriminatorColumn.isImplicit() ) {
+						bindDiscriminatorColumnToRootPersistentClass(
+								(RootClass) persistentClass,
+								discriminatorColumn,
+								entityBinder.getSecondaryTables(),
+								propertyHolder,
+								mappings
+						);
+						//bind it again since the type might have changed
+						entityBinder.bindDiscriminatorValue();
+					}
+				}
+			}
 		}
 		else if ( InheritanceType.SINGLE_TABLE.equals( inheritanceState.getType() ) ) {
-			if ( ! inheritanceState.hasParents() ) {
-				if ( inheritanceState.hasSiblings() || !discriminatorColumn.isImplicit() ) {
-					//need a discriminator column
-					bindDiscriminatorToPersistentClass(
-							( RootClass ) persistentClass,
+			if ( isInheritanceRoot ) {
+				if ( hasSubclasses || !discriminatorColumn.isImplicit() ) {
+					bindDiscriminatorColumnToRootPersistentClass(
+							(RootClass) persistentClass,
 							discriminatorColumn,
 							entityBinder.getSecondaryTables(),
 							propertyHolder,
 							mappings
 					);
-					entityBinder.bindDiscriminatorValue();//bind it again since the type might have changed
+					//bind it again since the type might have changed
+					entityBinder.bindDiscriminatorValue();
 				}
 			}
 		}
-		else if ( InheritanceType.TABLE_PER_CLASS.equals( inheritanceState.getType() ) ) {
-			//nothing to do
+
+        if ( onDeleteAnn != null && !onDeleteAppropriate ) {
+			LOG.invalidOnDeleteAnnotation(propertyHolder.getEntityName());
 		}
-        if (onDeleteAnn != null && !onDeleteAppropriate) LOG.invalidOnDeleteAnnotation(propertyHolder.getEntityName());
 
 		// try to find class level generators
 		HashMap<String, IdGenerator> classGenerators = buildLocalGenerators( clazzToProcess, mappings );
@@ -711,35 +821,46 @@ public final class AnnotationBinder {
 		//add process complementary Table definition (index & all)
 		entityBinder.processComplementaryTableDefinitions( clazzToProcess.getAnnotation( org.hibernate.annotations.Table.class ) );
 		entityBinder.processComplementaryTableDefinitions( clazzToProcess.getAnnotation( org.hibernate.annotations.Tables.class ) );
-
+		entityBinder.processComplementaryTableDefinitions( tabAnn );
 	}
 
-	// parse everything discriminator column relevant in case of single table inheritance
-	private static Ejb3DiscriminatorColumn processDiscriminatorProperties(XClass clazzToProcess, Mappings mappings, InheritanceState inheritanceState, EntityBinder entityBinder) {
+	/**
+	 * Process all discriminator-related metadata per rules for "single table" inheritance
+	 */
+	private static Ejb3DiscriminatorColumn processSingleTableDiscriminatorProperties(
+			XClass clazzToProcess,
+			Mappings mappings,
+			InheritanceState inheritanceState,
+			EntityBinder entityBinder) {
+		final boolean isRoot = !inheritanceState.hasParents();
+
 		Ejb3DiscriminatorColumn discriminatorColumn = null;
 		javax.persistence.DiscriminatorColumn discAnn = clazzToProcess.getAnnotation(
 				javax.persistence.DiscriminatorColumn.class
 		);
-		DiscriminatorType discriminatorType = discAnn != null ?
-				discAnn.discriminatorType() :
-				DiscriminatorType.STRING;
+		DiscriminatorType discriminatorType = discAnn != null
+				? discAnn.discriminatorType()
+				: DiscriminatorType.STRING;
 
 		org.hibernate.annotations.DiscriminatorFormula discFormulaAnn = clazzToProcess.getAnnotation(
 				org.hibernate.annotations.DiscriminatorFormula.class
 		);
-		if ( !inheritanceState.hasParents() ) {
+		if ( isRoot ) {
 			discriminatorColumn = Ejb3DiscriminatorColumn.buildDiscriminatorColumn(
-					discriminatorType, discAnn, discFormulaAnn, mappings
+					discriminatorType,
+					discAnn,
+					discFormulaAnn,
+					mappings
 			);
 		}
-		if ( discAnn != null && inheritanceState.hasParents() ) {
+		if ( discAnn != null && !isRoot ) {
 			LOG.invalidDiscriminatorAnnotation( clazzToProcess.getName() );
 		}
 
-		String discrimValue = clazzToProcess.isAnnotationPresent( DiscriminatorValue.class ) ?
-				clazzToProcess.getAnnotation( DiscriminatorValue.class ).value() :
-				null;
-		entityBinder.setDiscriminatorValue( discrimValue );
+		final String discriminatorValue = clazzToProcess.isAnnotationPresent( DiscriminatorValue.class )
+				? clazzToProcess.getAnnotation( DiscriminatorValue.class ).value()
+				: null;
+		entityBinder.setDiscriminatorValue( discriminatorValue );
 
 		DiscriminatorOptions discriminatorOptions = clazzToProcess.getAnnotation( DiscriminatorOptions.class );
 		if ( discriminatorOptions != null) {
@@ -748,6 +869,81 @@ public final class AnnotationBinder {
 		}
 
 		return discriminatorColumn;
+	}
+
+	/**
+	 * Process all discriminator-related metadata per rules for "joined" inheritance
+	 */
+	private static Ejb3DiscriminatorColumn processJoinedDiscriminatorProperties(
+			XClass clazzToProcess,
+			Mappings mappings,
+			InheritanceState inheritanceState,
+			EntityBinder entityBinder) {
+		if ( clazzToProcess.isAnnotationPresent( DiscriminatorFormula.class ) ) {
+			throw new MappingException( "@DiscriminatorFormula on joined inheritance not supported at this time" );
+		}
+
+
+		// DiscriminatorValue handling ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+		final DiscriminatorValue discriminatorValueAnnotation = clazzToProcess.getAnnotation( DiscriminatorValue.class );
+		final String discriminatorValue = discriminatorValueAnnotation != null
+				? clazzToProcess.getAnnotation( DiscriminatorValue.class ).value()
+				: null;
+		entityBinder.setDiscriminatorValue( discriminatorValue );
+
+
+		// DiscriminatorColumn handling ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+		final DiscriminatorColumn discriminatorColumnAnnotation = clazzToProcess.getAnnotation( DiscriminatorColumn.class );
+		if ( !inheritanceState.hasParents() ) {
+			// we want to process the discriminator column if either:
+			//		1) There is an explicit DiscriminatorColumn annotation && we are not told to ignore them
+			//		2) There is not an explicit DiscriminatorColumn annotation && we are told to create them implicitly
+			final boolean generateDiscriminatorColumn;
+			if ( discriminatorColumnAnnotation != null ) {
+				if ( mappings.ignoreExplicitDiscriminatorColumnForJoinedInheritance() ) {
+					LOG.debugf( "Ignoring explicit DiscriminatorColumn annotation on ", clazzToProcess.getName() );
+					generateDiscriminatorColumn = false;
+				}
+				else {
+					LOG.applyingExplicitDiscriminatorColumnForJoined(
+							clazzToProcess.getName(),
+							AvailableSettings.IGNORE_EXPLICIT_DISCRIMINATOR_COLUMNS_FOR_JOINED_SUBCLASS
+					);
+					generateDiscriminatorColumn = true;
+				}
+			}
+			else {
+				if ( mappings.useImplicitDiscriminatorColumnForJoinedInheritance() ) {
+					LOG.debug( "Applying implicit DiscriminatorColumn using DiscriminatorColumn defaults" );
+					generateDiscriminatorColumn = true;
+				}
+				else {
+					LOG.debug( "Ignoring implicit (absent) DiscriminatorColumn" );
+					generateDiscriminatorColumn = false;
+				}
+			}
+
+			if ( generateDiscriminatorColumn ) {
+				final DiscriminatorType discriminatorType = discriminatorColumnAnnotation != null
+						? discriminatorColumnAnnotation.discriminatorType()
+						: DiscriminatorType.STRING;
+				return Ejb3DiscriminatorColumn.buildDiscriminatorColumn(
+						discriminatorType,
+						discriminatorColumnAnnotation,
+						null,
+						mappings
+				);
+			}
+		}
+		else {
+			if ( discriminatorColumnAnnotation != null ) {
+				LOG.invalidDiscriminatorAnnotation( clazzToProcess.getName() );
+			}
+		}
+
+		return null;
 	}
 
 	private static void processIdPropertiesIfNotAlready(
@@ -859,7 +1055,7 @@ public final class AnnotationBinder {
 			);
 			propertyHolder.setInIdClass( null );
 			inferredData = new PropertyPreloadedData(
-					propertyAccessor, "_identifierMapper", compositeClass
+					propertyAccessor, PropertyPath.IDENTIFIER_MAPPER_PROPERTY, compositeClass
 			);
 			Component mapper = fillComponent(
 					propertyHolder,
@@ -878,12 +1074,11 @@ public final class AnnotationBinder {
 			persistentClass.setIdentifierMapper( mapper );
 
 			//If id definition is on a mapped superclass, update the mapping
-			final org.hibernate.mapping.MappedSuperclass superclass =
-					BinderHelper.getMappedSuperclassOrNull(
-							inferredData.getDeclaringClass(),
-							inheritanceStatePerClass,
-							mappings
-					);
+			final org.hibernate.mapping.MappedSuperclass superclass = BinderHelper.getMappedSuperclassOrNull(
+					classWithIdClass,
+					inheritanceStatePerClass,
+					mappings
+			);
 			if ( superclass != null ) {
 				superclass.setDeclaredIdentifierMapper( mapper );
 			}
@@ -893,7 +1088,7 @@ public final class AnnotationBinder {
 			}
 
 			Property property = new Property();
-			property.setName( "_identifierMapper" );
+			property.setName( PropertyPath.IDENTIFIER_MAPPER_PROPERTY );
 			property.setNodeName( "id" );
 			property.setUpdateable( false );
 			property.setInsertable( false );
@@ -1115,7 +1310,7 @@ public final class AnnotationBinder {
 					jcAnn = jcsAnn.value()[colIndex];
 					inheritanceJoinedColumns[colIndex] = Ejb3JoinColumn.buildJoinColumn(
 							jcAnn, null, superEntity.getIdentifier(),
-							( Map<String, Join> ) null, ( PropertyHolder ) null, mappings
+							null, null, mappings
 					);
 				}
 			}
@@ -1124,7 +1319,7 @@ public final class AnnotationBinder {
 				inheritanceJoinedColumns = new Ejb3JoinColumn[1];
 				inheritanceJoinedColumns[0] = Ejb3JoinColumn.buildJoinColumn(
 						jcAnn, null, superEntity.getIdentifier(),
-						( Map<String, Join> ) null, ( PropertyHolder ) null, mappings
+						null, null, mappings
 				);
 			}
 			LOG.trace( "Subclass joined column(s) created" );
@@ -1308,7 +1503,7 @@ public final class AnnotationBinder {
 	}
 
 
-	private static void bindDiscriminatorToPersistentClass(
+	private static void bindDiscriminatorColumnToRootPersistentClass(
 			RootClass rootClass,
 			Ejb3DiscriminatorColumn discriminatorColumn,
 			Map<String, Join> secondaryTables,
@@ -1320,10 +1515,10 @@ public final class AnnotationBinder {
 			}
 			discriminatorColumn.setJoins( secondaryTables );
 			discriminatorColumn.setPropertyHolder( propertyHolder );
-			SimpleValue discrim = new SimpleValue( mappings, rootClass.getTable() );
-			rootClass.setDiscriminator( discrim );
-			discriminatorColumn.linkWithValue( discrim );
-			discrim.setTypeName( discriminatorColumn.getDiscriminatorTypeName() );
+			SimpleValue discriminatorColumnBinding = new SimpleValue( mappings, rootClass.getTable() );
+			rootClass.setDiscriminator( discriminatorColumnBinding );
+			discriminatorColumn.linkWithValue( discriminatorColumnBinding );
+			discriminatorColumnBinding.setTypeName( discriminatorColumn.getDiscriminatorTypeName() );
 			rootClass.setPolymorphic( true );
 			if ( LOG.isTraceEnabled() ) {
 				LOG.tracev( "Setting discriminator for entity {0}", rootClass.getEntityName() );
@@ -1471,7 +1666,8 @@ public final class AnnotationBinder {
 		 * ordering does not matter
 		 */
 
-		if ( LOG.isTraceEnabled() ) {
+		final boolean traceEnabled = LOG.isTraceEnabled();
+		if ( traceEnabled ) {
 			LOG.tracev( "Processing annotations of {0}.{1}" , propertyHolder.getEntityName(), inferredData.getPropertyName() );
 		}
 
@@ -1537,7 +1733,7 @@ public final class AnnotationBinder {
 								+ propertyHolder.getEntityName()
 				);
 			}
-			if ( LOG.isTraceEnabled() ) {
+			if ( traceEnabled ) {
 				LOG.tracev( "{0} is a version property", inferredData.getPropertyName() );
 			}
 			RootClass rootClass = ( RootClass ) propertyHolder.getPersistentClass();
@@ -1562,8 +1758,8 @@ public final class AnnotationBinder {
 
 			SimpleValue simpleValue = ( SimpleValue ) prop.getValue();
 			simpleValue.setNullValue( "undefined" );
-			rootClass.setOptimisticLockMode( Versioning.OPTIMISTIC_LOCK_VERSION );
-			if ( LOG.isTraceEnabled() ) {
+			rootClass.setOptimisticLockStyle( OptimisticLockStyle.VERSION );
+			if ( traceEnabled ) {
 				LOG.tracev( "Version name: {0}, unsavedValue: {1}", rootClass.getVersion().getName(),
 						( (SimpleValue) rootClass.getVersion().getValue() ).getNullValue() );
 			}
@@ -1592,7 +1788,7 @@ public final class AnnotationBinder {
 				if ( assocTable != null ) {
 					Join join = propertyHolder.addJoin( assocTable, false );
 					for ( Ejb3JoinColumn joinColumn : joinColumns ) {
-						joinColumn.setSecondaryTableName( join.getTable().getName() );
+						joinColumn.setExplicitTableName( join.getTable().getName() );
 					}
 				}
 				final boolean mandatory = !ann.optional() || forcePersist;
@@ -1631,7 +1827,7 @@ public final class AnnotationBinder {
 				if ( assocTable != null ) {
 					Join join = propertyHolder.addJoin( assocTable, false );
 					for ( Ejb3JoinColumn joinColumn : joinColumns ) {
-						joinColumn.setSecondaryTableName( join.getTable().getName() );
+						joinColumn.setExplicitTableName( join.getTable().getName() );
 					}
 				}
 				//MapsId means the columns belong to the pk => not null
@@ -1672,7 +1868,7 @@ public final class AnnotationBinder {
 				if ( assocTable != null ) {
 					Join join = propertyHolder.addJoin( assocTable, false );
 					for ( Ejb3JoinColumn joinColumn : joinColumns ) {
-						joinColumn.setSecondaryTableName( join.getTable().getName() );
+						joinColumn.setExplicitTableName( join.getTable().getName() );
 					}
 				}
 				bindAny(
@@ -1706,6 +1902,9 @@ public final class AnnotationBinder {
 							entityBinder.getSecondaryTables(),
 							mappings
 					);
+					if ( property.isAnnotationPresent( ListIndexBase.class ) ) {
+						indexColumn.setBase( ( property.getAnnotation( ListIndexBase.class ) ).value() );
+					}
 				}
 				else {
 					//if @IndexColumn is not there, the generated IndexColumn is an implicit column and not used.
@@ -1727,14 +1926,16 @@ public final class AnnotationBinder {
 				collectionBinder.setIndexColumn( indexColumn );
 				collectionBinder.setMapKey( property.getAnnotation( MapKey.class ) );
 				collectionBinder.setPropertyName( inferredData.getPropertyName() );
-				BatchSize batchAnn = property.getAnnotation( BatchSize.class );
-				collectionBinder.setBatchSize( batchAnn );
-				javax.persistence.OrderBy ejb3OrderByAnn = property.getAnnotation( javax.persistence.OrderBy.class );
-				OrderBy orderByAnn = property.getAnnotation( OrderBy.class );
-				collectionBinder.setEjb3OrderBy( ejb3OrderByAnn );
-				collectionBinder.setSqlOrderBy( orderByAnn );
-				Sort sortAnn = property.getAnnotation( Sort.class );
-				collectionBinder.setSort( sortAnn );
+
+				collectionBinder.setBatchSize( property.getAnnotation( BatchSize.class ) );
+
+				collectionBinder.setJpaOrderBy( property.getAnnotation( javax.persistence.OrderBy.class ) );
+				collectionBinder.setSqlOrderBy( property.getAnnotation( OrderBy.class ) );
+
+				collectionBinder.setSort( property.getAnnotation( Sort.class ) );
+				collectionBinder.setNaturalSort( property.getAnnotation( SortNatural.class ) );
+				collectionBinder.setComparatorSort( property.getAnnotation( SortComparator.class ) );
+
 				Cache cachAnn = property.getAnnotation( Cache.class );
 				collectionBinder.setCache( cachAnn );
 				collectionBinder.setPropertyHolder( propertyHolder );
@@ -2092,16 +2293,22 @@ public final class AnnotationBinder {
 			}
 		}
 
+		// Natural ID columns must reside in one single UniqueKey within the Table.
+		// For now, simply ensure consistent naming.
+		// TODO: AFAIK, there really isn't a reason for these UKs to be created
+		// on the secondPass.  This whole area should go away...
 		NaturalId naturalIdAnn = property.getAnnotation( NaturalId.class );
 		if ( naturalIdAnn != null ) {
 			if ( joinColumns != null ) {
 				for ( Ejb3Column column : joinColumns ) {
-					column.addUniqueKey( "_UniqueKey", inSecondPass );
+					String keyName = "UK_" + Constraint.hashedName( column.getTable().getName() + "_NaturalID" );
+					column.addUniqueKey( keyName, inSecondPass );
 				}
 			}
 			else {
 				for ( Ejb3Column column : columns ) {
-					column.addUniqueKey( "_UniqueKey", inSecondPass );
+					String keyName = "UK_" + Constraint.hashedName( column.getTable().getName() + "_NaturalID" );
+					column.addUniqueKey( keyName, inSecondPass );
 				}
 			}
 		}
@@ -2171,7 +2378,6 @@ public final class AnnotationBinder {
 		JoinColumn[] annInverseJoins;
 		JoinTable assocTable = propertyHolder.getJoinTable( property );
 		CollectionTable collectionTable = property.getAnnotation( CollectionTable.class );
-
 		if ( assocTable != null || collectionTable != null ) {
 
 			final String catalog;
@@ -2180,6 +2386,8 @@ public final class AnnotationBinder {
 			final UniqueConstraint[] uniqueConstraints;
 			final JoinColumn[] joins;
 			final JoinColumn[] inverseJoins;
+			final javax.persistence.Index[] jpaIndexes;
+
 
 			//JPA 2 has priority
 			if ( collectionTable != null ) {
@@ -2189,6 +2397,7 @@ public final class AnnotationBinder {
 				uniqueConstraints = collectionTable.uniqueConstraints();
 				joins = collectionTable.joinColumns();
 				inverseJoins = null;
+				jpaIndexes = collectionTable.indexes();
 			}
 			else {
 				catalog = assocTable.catalog();
@@ -2197,10 +2406,13 @@ public final class AnnotationBinder {
 				uniqueConstraints = assocTable.uniqueConstraints();
 				joins = assocTable.joinColumns();
 				inverseJoins = assocTable.inverseJoinColumns();
+				jpaIndexes = assocTable.indexes();
 			}
 
 			collectionBinder.setExplicitAssociationTable( true );
-
+			if ( jpaIndexes != null && jpaIndexes.length > 0 ) {
+				associationTableBinder.setJpaIndex( jpaIndexes );
+			}
 			if ( !BinderHelper.isEmptyAnnotationValue( schema ) ) {
 				associationTableBinder.setSchema( schema );
 			}
@@ -2211,7 +2423,7 @@ public final class AnnotationBinder {
 				associationTableBinder.setName( tableName );
 			}
 			associationTableBinder.setUniqueConstraints( uniqueConstraints );
-
+			associationTableBinder.setJpaIndex( jpaIndexes );
 			//set check constaint in the second pass
 			annJoins = joins.length == 0 ? null : joins;
 			annInverseJoins = inverseJoins == null || inverseJoins.length == 0 ? null : inverseJoins;
@@ -2337,9 +2549,17 @@ public final class AnnotationBinder {
 		String subpath = BinderHelper.getPath( propertyHolder, inferredData );
 		LOG.tracev( "Binding component with path: {0}", subpath );
 		PropertyHolder subHolder = PropertyHolderBuilder.buildPropertyHolder(
-				comp, subpath,
-				inferredData, propertyHolder, mappings
+				comp,
+				subpath,
+				inferredData,
+				propertyHolder,
+				mappings
 		);
+
+
+		// propertyHolder here is the owner of the component property.  Tell it we are about to start the component...
+
+		propertyHolder.startingProperty( inferredData.getProperty() );
 
 		final XClass xClassProcessed = inferredData.getPropertyClass();
 		List<PropertyData> classElements = new ArrayList<PropertyData>();
@@ -2521,7 +2741,7 @@ public final class AnnotationBinder {
 			value.setColumns( columns );
 			value.setPersistentClassName( persistentClassName );
 			value.setMappings( mappings );
-			value.setType( inferredData.getProperty(), inferredData.getClassOrElement(), persistentClassName );
+			value.setType( inferredData.getProperty(), inferredData.getClassOrElement(), persistentClassName, null );
 			value.setAccessType( propertyAccessor );
 			id = value.make();
 		}
@@ -2627,6 +2847,8 @@ public final class AnnotationBinder {
 				column.setUpdatable( false );
 			}
 		}
+		
+		final JoinColumn joinColumn = property.getAnnotation( JoinColumn.class );
 
 		//Make sure that JPA1 key-many-to-one columns are read only tooj
 		boolean hasSpecjManyToOne=false;
@@ -2638,7 +2860,6 @@ public final class AnnotationBinder {
 					columnName = prop.getAnnotation( Column.class ).name();
 				}
 
-				final JoinColumn joinColumn = property.getAnnotation( JoinColumn.class );
 				if ( property.isAnnotationPresent( ManyToOne.class ) && joinColumn != null
 						&& ! BinderHelper.isEmptyAnnotationValue( joinColumn.name() )
 						&& joinColumn.name().equals( columnName )
@@ -2655,12 +2876,16 @@ public final class AnnotationBinder {
 		value.setTypeName( inferredData.getClassOrElementName() );
 		final String propertyName = inferredData.getPropertyName();
 		value.setTypeUsingReflection( propertyHolder.getClassName(), propertyName );
-
-		ForeignKey fk = property.getAnnotation( ForeignKey.class );
-		String fkName = fk != null ?
-				fk.name() :
-				"";
-		if ( !BinderHelper.isEmptyAnnotationValue( fkName ) ) {
+		
+		String fkName = null;
+		if ( joinColumn != null && joinColumn.foreignKey() != null ) {
+			fkName = joinColumn.foreignKey().name();
+		}
+		if ( StringHelper.isEmpty( fkName ) ) {
+			ForeignKey fk = property.getAnnotation( ForeignKey.class );
+			fkName = fk != null ? fk.name() : "";
+		}
+		if ( !StringHelper.isEmpty( fkName ) ) {
 			value.setForeignKeyName( fkName );
 		}
 
@@ -2679,7 +2904,7 @@ public final class AnnotationBinder {
 					secondPass
 			);
 		}
-		Ejb3Column.checkPropertyConsistency( columns, propertyHolder.getEntityName() + propertyName );
+		Ejb3Column.checkPropertyConsistency( columns, propertyHolder.getEntityName() + "." + propertyName );
 		//PropertyBinder binder = new PropertyBinder();
 		propertyBinder.setName( propertyName );
 		propertyBinder.setValue( value );

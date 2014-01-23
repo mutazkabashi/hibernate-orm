@@ -22,6 +22,7 @@
  * Boston, MA  02110-1301  USA
  */
 package org.hibernate.cfg;
+
 import java.util.Map;
 
 import org.hibernate.AnnotationException;
@@ -52,6 +53,7 @@ public class IndexOrUniqueKeySecondPass implements SecondPass {
 		this.unique = false;
 	}
 
+
 	/**
 	 * Build an index
 	 */
@@ -69,11 +71,11 @@ public class IndexOrUniqueKeySecondPass implements SecondPass {
 		this.mappings = mappings;
 		this.unique = unique;
 	}
-
+	@Override
 	public void doSecondPass(Map persistentClasses) throws MappingException {
 		if ( columns != null ) {
-			for (String columnName : columns) {
-				addConstraintToColumn( columnName );
+			for ( int i = 0; i < columns.length; i++ ) {
+				addConstraintToColumn( columns[i] );
 			}
 		}
 		if ( column != null ) {
@@ -82,7 +84,7 @@ public class IndexOrUniqueKeySecondPass implements SecondPass {
 		}
 	}
 
-	private void addConstraintToColumn(String columnName) {
+	private void addConstraintToColumn(final String columnName ) {
 		Column column = table.getColumn(
 				new Column(
 						mappings.getPhysicalColumnName( columnName, table )

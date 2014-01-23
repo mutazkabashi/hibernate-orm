@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.Test;
-
 import org.hibernate.Hibernate;
 import org.hibernate.HibernateException;
 import org.hibernate.Query;
@@ -20,7 +19,10 @@ import org.hibernate.Transaction;
 import org.hibernate.cfg.Configuration;
 import org.hibernate.cfg.Environment;
 import org.hibernate.dialect.H2Dialect;
+import org.hibernate.dialect.AbstractHANADialect;
 import org.hibernate.dialect.MySQL5Dialect;
+import org.hibernate.engine.query.spi.sql.NativeSQLQueryReturn;
+import org.hibernate.engine.spi.NamedSQLQueryDefinitionBuilder;
 import org.hibernate.internal.util.collections.ArrayHelper;
 import org.hibernate.test.sql.hand.Dimension;
 import org.hibernate.test.sql.hand.Employment;
@@ -57,7 +59,6 @@ import static org.junit.Assert.fail;
  *
  * @author Steve Ebersole
  */
-@SuppressWarnings({ "UnnecessaryBoxing", "UnnecessaryUnboxing" })
 public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 	public String[] getMappings() {
 		return new String[] { "sql/hand/query/NativeSQLQueries.hbm.xml" };
@@ -140,6 +141,28 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 			s.getTransaction().rollback();
 			s.close();
 		}
+	}
+	
+	@Test
+	public void testRegisteredNamedSQLQueryWithScalar()
+	{
+		final NamedSQLQueryDefinitionBuilder builder = new NamedSQLQueryDefinitionBuilder();
+		builder.setName("namedQuery");
+		builder.setQuery("select count(*) AS count from organization");
+		builder.setQueryReturns(new NativeSQLQueryReturn[1]);
+		
+		sessionFactory().registerNamedSQLQueryDefinition("namedQuery", builder.createNamedQueryDefinition());
+
+		final Session s = openSession();
+		s.beginTransaction();
+		final SQLQuery query = (SQLQuery) s.getNamedQuery("namedQuery");
+		query.addScalar("count");
+		final Object result = query.uniqueResult();
+ 		s.getTransaction().commit();
+		s.close();
+		
+		assertNotNull(result);
+		assertEquals(BigInteger.valueOf(0), result);
 	}
 
 	@Test
@@ -536,7 +559,7 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 		assertEquals(1, list.size());
 		m = (Map) list.get(0);
 		assertTrue(m.containsKey("EMPID"));
-		assertTrue(m.containsKey("VALUE"));
+		assertTrue(m.containsKey("AMOUNT"));
 		assertTrue(m.containsKey("ENDDATE"));
 		assertEquals(8, m.size());
 
@@ -650,7 +673,7 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 				"       emp.STARTDATE 	as startDate," +
 				"       emp.ENDDATE 	as endDate," +
 				"       emp.REGIONCODE 	as regionCode," +
-				"       emp.VALUE 		as VALUE," +
+				"       emp.AMOUNT 		as AMOUNT," +
 				"       emp.CURRENCY 	as CURRENCY" +
 				" FROM 	ORGANIZATION org" +
 				"    LEFT OUTER JOIN EMPLOYMENT emp ON org.ORGID = emp.EMPLOYER";
@@ -678,7 +701,7 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 				.addProperty( "element.endDate", "endDate" )
 				.addProperty( "element.regionCode", "regionCode" )
 				.addProperty( "element.employmentId", "empId" )
-				.addProperty( "element.salary" ).addColumnAlias( "VALUE" ).addColumnAlias( "CURRENCY" );
+				.addProperty( "element.salary" ).addColumnAlias( "AMOUNT" ).addColumnAlias( "CURRENCY" );
 		sqlQuery.list();
 
 		// lets try a totally different approach now and pull back scalars, first with explicit types
@@ -690,7 +713,7 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 				.addScalar( "endDate", TimestampType.INSTANCE )
 				.addScalar( "regionCode", StringType.INSTANCE )
 				.addScalar( "empId", LongType.INSTANCE )
-				.addScalar( "VALUE", FloatType.INSTANCE )
+				.addScalar( "AMOUNT", FloatType.INSTANCE )
 				.addScalar( "CURRENCY", StringType.INSTANCE );
 
 
@@ -797,6 +820,7 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 		s.close();
 	}
 
+	@SkipForDialect(value = AbstractHANADialect.class, comment = "On HANA, this returns an clob for the text column which doesn't get mapped to a String")
 	@Test
 	public void testTextTypeInSQLQuery() {
 		Session s = openSession();
@@ -817,6 +841,7 @@ public class NativeSQLQueriesTest extends BaseCoreFunctionalTestCase {
 		s.close();
 	}
 
+	@SkipForDialect(value = AbstractHANADialect.class, comment = "On HANA, this returns a blob for the image column which doesn't get mapped to a byte[]")
 	@Test
 	public void testImageTypeInSQLQuery() {
 		Session s = openSession();

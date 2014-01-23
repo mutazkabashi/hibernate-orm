@@ -52,17 +52,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
 import javax.persistence.AttributeConverter;
+import javax.persistence.Converter;
 import javax.persistence.Embeddable;
 import javax.persistence.Entity;
 import javax.persistence.MapsId;
-
-import org.dom4j.Attribute;
-import org.dom4j.Document;
-import org.dom4j.DocumentException;
-import org.dom4j.Element;
-import org.jboss.logging.Logger;
-import org.xml.sax.EntityResolver;
-import org.xml.sax.InputSource;
 
 import org.hibernate.AnnotationException;
 import org.hibernate.AssertionFailure;
@@ -82,12 +75,17 @@ import org.hibernate.annotations.common.reflection.ReflectionManager;
 import org.hibernate.annotations.common.reflection.XClass;
 import org.hibernate.annotations.common.reflection.java.JavaReflectionManager;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
+import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
+import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
+import org.hibernate.cfg.annotations.NamedEntityGraphDefinition;
+import org.hibernate.cfg.annotations.NamedProcedureCallDefinition;
 import org.hibernate.cfg.annotations.reflection.JPAMetadataProvider;
 import org.hibernate.context.spi.CurrentTenantIdentifierResolver;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.MySQLDialect;
 import org.hibernate.dialect.function.SQLFunction;
 import org.hibernate.engine.ResultSetMappingDefinition;
+import org.hibernate.engine.jdbc.spi.JdbcServices;
 import org.hibernate.engine.spi.FilterDefinition;
 import org.hibernate.engine.spi.Mapping;
 import org.hibernate.engine.spi.NamedQueryDefinition;
@@ -100,6 +98,7 @@ import org.hibernate.id.factory.internal.DefaultIdentifierGeneratorFactory;
 import org.hibernate.id.factory.spi.MutableIdentifierGeneratorFactory;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.internal.SessionFactoryImpl;
+import org.hibernate.internal.util.ClassLoaderHelper;
 import org.hibernate.internal.util.ConfigHelper;
 import org.hibernate.internal.util.ReflectHelper;
 import org.hibernate.internal.util.SerializationHelper;
@@ -118,6 +117,7 @@ import org.hibernate.internal.util.xml.XmlDocumentImpl;
 import org.hibernate.mapping.AuxiliaryDatabaseObject;
 import org.hibernate.mapping.Collection;
 import org.hibernate.mapping.Column;
+import org.hibernate.mapping.Constraint;
 import org.hibernate.mapping.DenormalizedTable;
 import org.hibernate.mapping.FetchProfile;
 import org.hibernate.mapping.ForeignKey;
@@ -134,13 +134,17 @@ import org.hibernate.mapping.SimpleValue;
 import org.hibernate.mapping.Table;
 import org.hibernate.mapping.TypeDef;
 import org.hibernate.mapping.UniqueKey;
+import org.hibernate.metamodel.spi.TypeContributions;
+import org.hibernate.metamodel.spi.TypeContributor;
 import org.hibernate.proxy.EntityNotFoundDelegate;
-import org.hibernate.secure.internal.JACCConfiguration;
+import org.hibernate.secure.spi.GrantedPermission;
+import org.hibernate.secure.spi.JaccPermissionDeclarations;
 import org.hibernate.service.ServiceRegistry;
-import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
 import org.hibernate.tool.hbm2ddl.DatabaseMetadata;
 import org.hibernate.tool.hbm2ddl.IndexMetadata;
+import org.hibernate.tool.hbm2ddl.SchemaUpdateScript;
 import org.hibernate.tool.hbm2ddl.TableMetadata;
+import org.hibernate.tool.hbm2ddl.UniqueConstraintSchemaUpdateStrategy;
 import org.hibernate.tuple.entity.EntityTuplizerFactory;
 import org.hibernate.type.BasicType;
 import org.hibernate.type.SerializationException;
@@ -148,6 +152,15 @@ import org.hibernate.type.Type;
 import org.hibernate.type.TypeResolver;
 import org.hibernate.usertype.CompositeUserType;
 import org.hibernate.usertype.UserType;
+
+import org.jboss.logging.Logger;
+
+import org.dom4j.Attribute;
+import org.dom4j.Document;
+import org.dom4j.DocumentException;
+import org.dom4j.Element;
+import org.xml.sax.EntityResolver;
+import org.xml.sax.InputSource;
 
 /**
  * An instance of <tt>Configuration</tt> allows the application
@@ -205,7 +218,9 @@ public class Configuration implements Serializable {
 
 	protected Map<String, NamedQueryDefinition> namedQueries;
 	protected Map<String, NamedSQLQueryDefinition> namedSqlQueries;
+	protected Map<String, NamedProcedureCallDefinition> namedProcedureCallMap;
 	protected Map<String, ResultSetMappingDefinition> sqlResultSetMappings;
+	protected Map<String, NamedEntityGraphDefinition> namedEntityGraphMap;
 
 	protected Map<String, TypeDef> typeDefs;
 	protected Map<String, FilterDefinition> filterDefinitions;
@@ -219,7 +234,9 @@ public class Configuration implements Serializable {
 	protected Map<ExtendsQueueEntry, ?> extendsQueue;
 
 	protected Map<String, SQLFunction> sqlFunctions;
+	
 	private TypeResolver typeResolver = new TypeResolver();
+	private List<TypeContributor> typeContributorRegistrations = new ArrayList<TypeContributor>();
 
 	private EntityTuplizerFactory entityTuplizerFactory;
 //	private ComponentTuplizerFactory componentTuplizerFactory; todo : HHH-3517 and HHH-1907
@@ -247,9 +264,12 @@ public class Configuration implements Serializable {
 	private Set<String> defaultNamedQueryNames;
 	private Set<String> defaultNamedNativeQueryNames;
 	private Set<String> defaultSqlResultSetMappingNames;
+	private Set<String> defaultNamedProcedure;
+
 	private Set<String> defaultNamedGenerators;
 	private Map<String, Properties> generatorTables;
 	private Map<Table, List<UniqueConstraintHolder>> uniqueConstraintHoldersByTable;
+	private Map<Table, List<JPAIndexHolder>> jpaIndexHoldersByTable;
 	private Map<String, String> mappedByResolver;
 	private Map<String, String> propertyRefResolver;
 	private Map<String, AnyMetaDef> anyMetaDefs;
@@ -285,7 +305,8 @@ public class Configuration implements Serializable {
 		namedQueries = new HashMap<String,NamedQueryDefinition>();
 		namedSqlQueries = new HashMap<String,NamedSQLQueryDefinition>();
 		sqlResultSetMappings = new HashMap<String, ResultSetMappingDefinition>();
-
+		namedEntityGraphMap = new HashMap<String, NamedEntityGraphDefinition>();
+		namedProcedureCallMap = new HashMap<String, NamedProcedureCallDefinition>(  );
 		typeDefs = new HashMap<String,TypeDef>();
 		filterDefinitions = new HashMap<String, FilterDefinition>();
 		fetchProfiles = new HashMap<String, FetchProfile>();
@@ -321,8 +342,10 @@ public class Configuration implements Serializable {
 		defaultNamedQueryNames = new HashSet<String>();
 		defaultNamedNativeQueryNames = new HashSet<String>();
 		defaultSqlResultSetMappingNames = new HashSet<String>();
+		defaultNamedProcedure =  new HashSet<String>(  );
 		defaultNamedGenerators = new HashSet<String>();
 		uniqueConstraintHoldersByTable = new HashMap<Table, List<UniqueConstraintHolder>>();
+		jpaIndexHoldersByTable = new HashMap<Table,List<JPAIndexHolder>>(  );
 		mappedByResolver = new HashMap<String, String>();
 		propertyRefResolver = new HashMap<String, String>();
 		caches = new ArrayList<CacheHolder>();
@@ -381,6 +404,17 @@ public class Configuration implements Serializable {
 	 */
 	public Iterator<MappedSuperclass> getMappedSuperclassMappings() {
 		return mappedSuperClasses.values().iterator();
+	}
+
+	/**
+	 * Get a copy of all known MappedSuperclasses
+	 * <p/>
+	 * EXPERIMENTAL Consider this API as PRIVATE
+	 *
+	 * @return Set of all known MappedSuperclasses
+	 */
+	public java.util.Set<MappedSuperclass> getMappedSuperclassMappingsCopy() {
+		return new HashSet<MappedSuperclass>( mappedSuperClasses.values() );
 	}
 
 	/**
@@ -500,6 +534,7 @@ public class Configuration implements Serializable {
 					throw new AnnotationException( "Unable to load class defined in XML: " + className, e );
 				}
 			}
+			jpaMetadataProvider.getXMLContext().applyDiscoveredAttributeConverters( this );
 		}
 	}
 
@@ -720,7 +755,7 @@ public class Configuration implements Serializable {
 	 */
 	public Configuration addResource(String resourceName) throws MappingException {
 		LOG.readingMappingsFromResource( resourceName );
-		ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+		ClassLoader contextClassLoader = ClassLoaderHelper.getContextClassLoader();
 		InputStream resourceInputStream = null;
 		if ( contextClassLoader != null ) {
 			resourceInputStream = contextClassLoader.getResourceAsStream( resourceName );
@@ -854,12 +889,14 @@ public class Configuration implements Serializable {
 	 */
 	public Configuration addDirectory(File dir) throws MappingException {
 		File[] files = dir.listFiles();
-		for ( File file : files ) {
-			if ( file.isDirectory() ) {
-				addDirectory( file );
-			}
-			else if ( file.getName().endsWith( ".hbm.xml" ) ) {
-				addFile( file );
+		if ( files != null ) {
+			for ( File file : files ) {
+				if ( file.isDirectory() ) {
+					addDirectory( file );
+				}
+				else if ( file.getName().endsWith( ".hbm.xml" ) ) {
+					addFile( file );
+				}
 			}
 		}
 		return this;
@@ -876,7 +913,7 @@ public class Configuration implements Serializable {
 
 
 	@SuppressWarnings({ "unchecked" })
-	private Iterator<IdentifierGenerator> iterateGenerators(Dialect dialect) throws MappingException {
+	public Iterator<IdentifierGenerator> iterateGenerators(Dialect dialect) throws MappingException {
 
 		TreeMap generators = new TreeMap();
 		String defaultCatalog = properties.getProperty( Environment.DEFAULT_CATALOG );
@@ -1049,17 +1086,15 @@ public class Configuration implements Serializable {
 			Table table = (Table) iter.next();
 			if ( table.isPhysicalTable() ) {
 
-				if ( !dialect.supportsUniqueConstraintInCreateAlterTable() ) {
-					Iterator subIter = table.getUniqueKeyIterator();
-					while ( subIter.hasNext() ) {
-						UniqueKey uk = (UniqueKey) subIter.next();
-						String constraintString = uk.sqlCreateString( dialect, mapping, defaultCatalog, defaultSchema );
-						if (constraintString != null) script.add( constraintString );
-					}
+				Iterator subIter = table.getUniqueKeyIterator();
+				while ( subIter.hasNext() ) {
+					UniqueKey uk = (UniqueKey) subIter.next();
+					String constraintString = uk.sqlCreateString( dialect, mapping, defaultCatalog, defaultSchema );
+					if (constraintString != null) script.add( constraintString );
 				}
 
 
-				Iterator subIter = table.getIndexIterator();
+				subIter = table.getIndexIterator();
 				while ( subIter.hasNext() ) {
 					Index index = (Index) subIter.next();
 					script.add(
@@ -1071,9 +1106,17 @@ public class Configuration implements Serializable {
 								)
 						);
 				}
+			}
+		}
+
+		// Foreign keys must be created *after* unique keys for numerous DBs.  See HH-8390.
+		iter = getTableMappings();
+		while ( iter.hasNext() ) {
+			Table table = (Table) iter.next();
+			if ( table.isPhysicalTable() ) {
 
 				if ( dialect.hasAlterTable() ) {
-					subIter = table.getForeignKeyIterator();
+					Iterator subIter = table.getForeignKeyIterator();
 					while ( subIter.hasNext() ) {
 						ForeignKey fk = (ForeignKey) subIter.next();
 						if ( fk.isPhysicalConstraint() ) {
@@ -1115,57 +1158,64 @@ public class Configuration implements Serializable {
 	 *
 	 * @throws HibernateException Generally indicates a problem calling {@link #buildMappings()}
 	 *
-	 * @see org.hibernate.tool.hbm2ddl.SchemaExport
+	 * @see org.hibernate.tool.hbm2ddl.SchemaUpdate
+	 * 
+	 * @deprecated Use {@link #generateSchemaUpdateScriptList(Dialect, DatabaseMetadata)} instead
 	 */
 	@SuppressWarnings({ "unchecked" })
+	@Deprecated
 	public String[] generateSchemaUpdateScript(Dialect dialect, DatabaseMetadata databaseMetadata)
+			throws HibernateException {
+		List<SchemaUpdateScript> scripts = generateSchemaUpdateScriptList( dialect, databaseMetadata );
+		return SchemaUpdateScript.toStringArray( scripts );
+	}
+	
+	/**
+	 * @param dialect The dialect for which to generate the creation script
+	 * @param databaseMetadata The database catalog information for the database to be updated; needed to work out what
+	 * should be created/altered
+	 *
+	 * @return The sequence of DDL commands to apply the schema objects
+	 *
+	 * @throws HibernateException Generally indicates a problem calling {@link #buildMappings()}
+	 *
+	 * @see org.hibernate.tool.hbm2ddl.SchemaUpdate
+	 */
+	public List<SchemaUpdateScript> generateSchemaUpdateScriptList(Dialect dialect, DatabaseMetadata databaseMetadata)
 			throws HibernateException {
 		secondPassCompile();
 
 		String defaultCatalog = properties.getProperty( Environment.DEFAULT_CATALOG );
 		String defaultSchema = properties.getProperty( Environment.DEFAULT_SCHEMA );
+		UniqueConstraintSchemaUpdateStrategy constraintMethod = UniqueConstraintSchemaUpdateStrategy.interpret( properties
+				.get( Environment.UNIQUE_CONSTRAINT_SCHEMA_UPDATE_STRATEGY ) );
 
-		ArrayList<String> script = new ArrayList<String>( 50 );
+		List<SchemaUpdateScript> scripts = new ArrayList<SchemaUpdateScript>();
 
 		Iterator iter = getTableMappings();
 		while ( iter.hasNext() ) {
 			Table table = (Table) iter.next();
-			String tableSchema = ( table.getSchema() == null ) ? defaultSchema : table.getSchema() ;
+			String tableSchema = ( table.getSchema() == null ) ? defaultSchema : table.getSchema();
 			String tableCatalog = ( table.getCatalog() == null ) ? defaultCatalog : table.getCatalog();
 			if ( table.isPhysicalTable() ) {
 
-				TableMetadata tableInfo = databaseMetadata.getTableMetadata(
-						table.getName(),
-						tableSchema,
-						tableCatalog,
-						table.isQuoted()
-				);
+				TableMetadata tableInfo = databaseMetadata.getTableMetadata( table.getName(), tableSchema,
+						tableCatalog, table.isQuoted() );
 				if ( tableInfo == null ) {
-					script.add(
-							table.sqlCreateString(
-									dialect,
-									mapping,
-									tableCatalog,
-									tableSchema
-								)
-						);
+					scripts.add( new SchemaUpdateScript( table.sqlCreateString( dialect, mapping, tableCatalog,
+							tableSchema ), false ) );
 				}
 				else {
-					Iterator<String> subiter = table.sqlAlterStrings(
-							dialect,
-							mapping,
-							tableInfo,
-							tableCatalog,
-							tableSchema
-						);
+					Iterator<String> subiter = table.sqlAlterStrings( dialect, mapping, tableInfo, tableCatalog,
+							tableSchema );
 					while ( subiter.hasNext() ) {
-						script.add( subiter.next() );
+						scripts.add( new SchemaUpdateScript( subiter.next(), false ) );
 					}
 				}
 
 				Iterator<String> comments = table.sqlCommentStrings( dialect, defaultCatalog, defaultSchema );
 				while ( comments.hasNext() ) {
-					script.add( comments.next() );
+					scripts.add( new SchemaUpdateScript( comments.next(), false ) );
 				}
 
 			}
@@ -1174,40 +1224,33 @@ public class Configuration implements Serializable {
 		iter = getTableMappings();
 		while ( iter.hasNext() ) {
 			Table table = (Table) iter.next();
-			String tableSchema = ( table.getSchema() == null ) ? defaultSchema : table.getSchema() ;
+			String tableSchema = ( table.getSchema() == null ) ? defaultSchema : table.getSchema();
 			String tableCatalog = ( table.getCatalog() == null ) ? defaultCatalog : table.getCatalog();
 			if ( table.isPhysicalTable() ) {
 
-				TableMetadata tableInfo = databaseMetadata.getTableMetadata(
-						table.getName(),
-						tableSchema,
-						tableCatalog,
-						table.isQuoted()
-					);
+				TableMetadata tableInfo = databaseMetadata.getTableMetadata( table.getName(), tableSchema,
+						tableCatalog, table.isQuoted() );
 
-				if ( dialect.hasAlterTable() ) {
-					Iterator subIter = table.getForeignKeyIterator();
-					while ( subIter.hasNext() ) {
-						ForeignKey fk = (ForeignKey) subIter.next();
-						if ( fk.isPhysicalConstraint() ) {
-							boolean create = tableInfo == null || (
-									tableInfo.getForeignKeyMetadata( fk ) == null && (
-											//Icky workaround for MySQL bug:
-											!( dialect instanceof MySQLDialect ) ||
-													tableInfo.getIndexMetadata( fk.getName() ) == null
-										)
-								);
-							if ( create ) {
-								script.add(
-										fk.sqlCreateString(
-												dialect,
-												mapping,
-												tableCatalog,
-												tableSchema
-											)
-									);
+				if (! constraintMethod.equals( UniqueConstraintSchemaUpdateStrategy.SKIP )) {
+					Iterator uniqueIter = table.getUniqueKeyIterator();
+					while ( uniqueIter.hasNext() ) {
+						final UniqueKey uniqueKey = (UniqueKey) uniqueIter.next();
+						// Skip if index already exists. Most of the time, this
+						// won't work since most Dialects use Constraints. However,
+						// keep it for the few that do use Indexes.
+						if ( tableInfo != null && StringHelper.isNotEmpty( uniqueKey.getName() ) ) {
+							final IndexMetadata meta = tableInfo.getIndexMetadata( uniqueKey.getName() );
+							if ( meta != null ) {
+								continue;
 							}
 						}
+						String constraintString = uniqueKey.sqlCreateString( dialect, mapping, tableCatalog, tableSchema );
+						if ( constraintString != null && !constraintString.isEmpty() )
+							if ( constraintMethod.equals( UniqueConstraintSchemaUpdateStrategy.DROP_RECREATE_QUIETLY ) ) {
+								String constraintDropString = uniqueKey.sqlDropString( dialect, tableCatalog, tableSchema );
+								scripts.add( new SchemaUpdateScript( constraintDropString, true) );
+							}
+							scripts.add( new SchemaUpdateScript( constraintString, true) );
 					}
 				}
 
@@ -1221,24 +1264,38 @@ public class Configuration implements Serializable {
 							continue;
 						}
 					}
-					script.add(
-							index.sqlCreateString(
-									dialect,
-									mapping,
-									tableCatalog,
-									tableSchema
-							)
-					);
+					scripts.add( new SchemaUpdateScript( index.sqlCreateString( dialect, mapping, tableCatalog,
+							tableSchema ), false ) );
 				}
+			}
+		}
 
-//broken, 'cos we don't generate these with names in SchemaExport
-//				subIter = table.getUniqueKeyIterator();
-//				while ( subIter.hasNext() ) {
-//					UniqueKey uk = (UniqueKey) subIter.next();
-//					if ( tableInfo==null || tableInfo.getIndexMetadata( uk.getFilterName() ) == null ) {
-//						script.add( uk.sqlCreateString(dialect, mapping) );
-//					}
-//				}
+		// Foreign keys must be created *after* unique keys for numerous DBs.  See HH-8390.
+		iter = getTableMappings();
+		while ( iter.hasNext() ) {
+			Table table = (Table) iter.next();
+			String tableSchema = ( table.getSchema() == null ) ? defaultSchema : table.getSchema();
+			String tableCatalog = ( table.getCatalog() == null ) ? defaultCatalog : table.getCatalog();
+			if ( table.isPhysicalTable() ) {
+
+				TableMetadata tableInfo = databaseMetadata.getTableMetadata( table.getName(), tableSchema,
+						tableCatalog, table.isQuoted() );
+
+				if ( dialect.hasAlterTable() ) {
+					Iterator subIter = table.getForeignKeyIterator();
+					while ( subIter.hasNext() ) {
+						ForeignKey fk = (ForeignKey) subIter.next();
+						if ( fk.isPhysicalConstraint() ) {
+							boolean create = tableInfo == null || ( tableInfo.getForeignKeyMetadata( fk ) == null && (
+							// Icky workaround for MySQL bug:
+									!( dialect instanceof MySQLDialect ) || tableInfo.getIndexMetadata( fk.getName() ) == null ) );
+							if ( create ) {
+								scripts.add( new SchemaUpdateScript( fk.sqlCreateString( dialect, mapping,
+										tableCatalog, tableSchema ), false ) );
+							}
+						}
+					}
+				}
 			}
 		}
 
@@ -1248,11 +1305,11 @@ public class Configuration implements Serializable {
 			Object key = generator.generatorKey();
 			if ( !databaseMetadata.isSequence( key ) && !databaseMetadata.isTable( key ) ) {
 				String[] lines = generator.sqlCreateStrings( dialect );
-				script.addAll( Arrays.asList( lines ) );
+				scripts.addAll( SchemaUpdateScript.fromStringArray( lines, false ) );
 			}
 		}
 
-		return ArrayHelper.toStringArray( script );
+		return scripts;
 	}
 
 	public void validateSchema(Dialect dialect, DatabaseMetadata databaseMetadata)throws HibernateException {
@@ -1286,6 +1343,9 @@ public class Configuration implements Serializable {
 		while ( iter.hasNext() ) {
 			PersistentIdentifierGenerator generator = (PersistentIdentifierGenerator) iter.next();
 			Object key = generator.generatorKey();
+			if (key instanceof String) {
+				key = normalizer.normalizeIdentifierQuoting( (String) key );
+			}
 			if ( !databaseMetadata.isSequence( key ) && !databaseMetadata.isTable( key ) ) {
 				throw new HibernateException( "Missing sequence or table: " + key );
 			}
@@ -1313,6 +1373,11 @@ public class Configuration implements Serializable {
 
 	protected void secondPassCompile() throws MappingException {
 		LOG.trace( "Starting secondPassCompile() processing" );
+		
+		// TEMPORARY
+		// Ensure the correct ClassLoader is used in commons-annotations.
+		ClassLoader tccl = Thread.currentThread().getContextClassLoader();
+		Thread.currentThread().setContextClassLoader( ClassLoaderHelper.getContextClassLoader() );
 
 		//process default values first
 		{
@@ -1381,15 +1446,19 @@ public class Configuration implements Serializable {
 		for ( Map.Entry<Table, List<UniqueConstraintHolder>> tableListEntry : uniqueConstraintHoldersByTable.entrySet() ) {
 			final Table table = tableListEntry.getKey();
 			final List<UniqueConstraintHolder> uniqueConstraints = tableListEntry.getValue();
-			int uniqueIndexPerTable = 0;
 			for ( UniqueConstraintHolder holder : uniqueConstraints ) {
-				uniqueIndexPerTable++;
-				final String keyName = StringHelper.isEmpty( holder.getName() )
-						? "key" + uniqueIndexPerTable
-						: holder.getName();
-				buildUniqueKeyFromColumnNames( table, keyName, holder.getColumns() );
+				buildUniqueKeyFromColumnNames( table, holder.getName(), holder.getColumns() );
 			}
 		}
+		
+		for(Table table : jpaIndexHoldersByTable.keySet()){
+			final List<JPAIndexHolder> jpaIndexHolders = jpaIndexHoldersByTable.get( table );
+			for ( JPAIndexHolder holder : jpaIndexHolders ) {
+				buildUniqueKeyFromColumnNames( table, holder.getName(), holder.getColumns(), holder.getOrdering(), holder.isUnique() );
+			}
+		}
+		
+		Thread.currentThread().setContextClassLoader( tccl );
 	}
 
 	private void processSecondPassesOfType(Class<? extends SecondPass> type) {
@@ -1497,10 +1566,8 @@ public class Configuration implements Serializable {
 		for ( FkSecondPass sp : dependencies ) {
 			String dependentTable = quotedTableName(sp.getValue().getTable());
 			if ( dependentTable.compareTo( startTable ) == 0 ) {
-				StringBuilder sb = new StringBuilder(
-						"Foreign key circularity dependency involving the following tables: "
-				);
-				throw new AnnotationException( sb.toString() );
+				String sb = "Foreign key circularity dependency involving the following tables: ";
+				throw new AnnotationException( sb );
 			}
 			buildRecursiveOrderedFkSecondPasses( orderedFkSecondPasses, isADependencyOf, startTable, dependentTable );
 			if ( !orderedFkSecondPasses.contains( sp ) ) {
@@ -1543,33 +1610,60 @@ public class Configuration implements Serializable {
 		}
 	}
 
-	private void buildUniqueKeyFromColumnNames(Table table, String keyName, String[] columnNames) {
-		keyName = normalizer.normalizeIdentifierQuoting( keyName );
+	private void buildUniqueKeyFromColumnNames(Table table, String keyName, String[] columnNames){
+		buildUniqueKeyFromColumnNames( table, keyName, columnNames, null, true );
+	}
 
-		UniqueKey uc;
+	private void buildUniqueKeyFromColumnNames(Table table, String keyName, String[] columnNames, String[] orderings, boolean unique) {
 		int size = columnNames.length;
 		Column[] columns = new Column[size];
 		Set<Column> unbound = new HashSet<Column>();
 		Set<Column> unboundNoLogical = new HashSet<Column>();
 		for ( int index = 0; index < size; index++ ) {
-			final String logicalColumnName = normalizer.normalizeIdentifierQuoting( columnNames[index] );
+			String column = columnNames[index];
 			try {
-				final String columnName = createMappings().getPhysicalColumnName( logicalColumnName, table );
+				final String columnName = createMappings().getPhysicalColumnName( column, table );
 				columns[index] = new Column( columnName );
 				unbound.add( columns[index] );
 				//column equals and hashcode is based on column name
 			}
 			catch ( MappingException e ) {
-				unboundNoLogical.add( new Column( logicalColumnName ) );
+				// If at least 1 columnName does exist, 'columns' will contain a mix of Columns and nulls.  In order
+				// to exhaustively report all of the unbound columns at once, w/o an NPE in
+				// Constraint#generateName's array sorting, simply create a fake Column.
+				columns[index] = new Column( column );
+				unboundNoLogical.add( columns[index] );
 			}
 		}
-		for ( Column column : columns ) {
-			if ( table.containsColumn( column ) ) {
-				uc = table.getOrCreateUniqueKey( keyName );
-				uc.addColumn( table.getColumn( column ) );
-				unbound.remove( column );
+		
+		if ( StringHelper.isEmpty( keyName ) ) {
+			keyName = Constraint.generateName( "UK_", table, columns );
+		}
+		keyName = normalizer.normalizeIdentifierQuoting( keyName );
+		
+		if ( unique ) {
+			UniqueKey uk = table.getOrCreateUniqueKey( keyName );
+			for ( int i = 0; i < columns.length; i++ ) {
+				Column column = columns[i];
+				String order = orderings != null ? orderings[i] : null;
+				if ( table.containsColumn( column ) ) {
+					uk.addColumn( column, order );
+					unbound.remove( column );
+				}
 			}
 		}
+		else {
+			Index index = table.getOrCreateIndex( keyName );
+			for ( int i = 0; i < columns.length; i++ ) {
+				Column column = columns[i];
+				String order = orderings != null ? orderings[i] : null;
+				if ( table.containsColumn( column ) ) {
+					index.addColumn( column, order );
+					unbound.remove( column );
+				}
+			}
+		}
+
 		if ( unbound.size() > 0 || unboundNoLogical.size() > 0 ) {
 			StringBuilder sb = new StringBuilder( "Unable to create unique key constraint (" );
 			for ( String columnName : columnNames ) {
@@ -1578,10 +1672,10 @@ public class Configuration implements Serializable {
 			sb.setLength( sb.length() - 2 );
 			sb.append( ") on table " ).append( table.getName() ).append( ": database column " );
 			for ( Column column : unbound ) {
-				sb.append( column.getName() ).append( ", " );
+				sb.append("'").append( column.getName() ).append( "', " );
 			}
 			for ( Column column : unboundNoLogical ) {
-				sb.append( column.getName() ).append( ", " );
+				sb.append("'").append( column.getName() ).append( "', " );
 			}
 			sb.setLength( sb.length() - 2 );
 			sb.append( " not found. Make sure that you use the correct column name which depends on the naming strategy in use (it may not be the same as the property name in the entity, especially for relational types)" );
@@ -1630,15 +1724,19 @@ public class Configuration implements Serializable {
 				( (SimpleValue) prop.getValue() ).setAlternateUniqueKey( true );
 			}
 		}
-
+		
 		//TODO: Somehow add the newly created foreign keys to the internal collection
 
+		LOG.debug( "Creating tables' unique integer identifiers" );
 		LOG.debug( "Processing foreign key constraints" );
 
 		itr = getTableMappings();
+		int uniqueInteger = 0;
 		Set<ForeignKey> done = new HashSet<ForeignKey>();
 		while ( itr.hasNext() ) {
-			secondPassCompileForeignKeys( (Table) itr.next(), done );
+			Table table = (Table) itr.next();
+			table.setUniqueInteger( uniqueInteger++ );
+			secondPassCompileForeignKeys( table, done );
 		}
 
 	}
@@ -1724,6 +1822,10 @@ public class Configuration implements Serializable {
 		return namedQueries;
 	}
 
+	public Map<String, NamedProcedureCallDefinition> getNamedProcedureCallMap() {
+		return namedProcedureCallMap;
+	}
+
 	/**
 	 * Create a {@link SessionFactory} using the properties and mappings in this configuration. The
 	 * {@link SessionFactory} will be immutable, so changes made to {@code this} {@link Configuration} after
@@ -1737,7 +1839,8 @@ public class Configuration implements Serializable {
 	 */
 	public SessionFactory buildSessionFactory(ServiceRegistry serviceRegistry) throws HibernateException {
 		LOG.debugf( "Preparing to build session factory with filters : %s", filterDefinitions );
-
+		
+		buildTypeRegistrations( serviceRegistry );
 		secondPassCompile();
 		if ( !metadataSourceQueue.isEmpty() ) {
 			LOG.incompleteMappingMetadataCacheProcessing();
@@ -1759,6 +1862,39 @@ public class Configuration implements Serializable {
 				sessionFactoryObserver
 			);
 	}
+	
+	private void buildTypeRegistrations(ServiceRegistry serviceRegistry) {
+		final TypeContributions typeContributions = new TypeContributions() {
+			@Override
+			public void contributeType(BasicType type) {
+				typeResolver.registerTypeOverride( type );
+			}
+
+			@Override
+			public void contributeType(UserType type, String[] keys) {
+				typeResolver.registerTypeOverride( type, keys );
+			}
+
+			@Override
+			public void contributeType(CompositeUserType type, String[] keys) {
+				typeResolver.registerTypeOverride( type, keys );
+			}
+		};
+
+		// add Dialect contributed types
+		final Dialect dialect = serviceRegistry.getService( JdbcServices.class ).getDialect();
+		dialect.contributeTypes( typeContributions, serviceRegistry );
+
+		// add TypeContributor contributed types.
+		ClassLoaderService classLoaderService = serviceRegistry.getService( ClassLoaderService.class );
+		for ( TypeContributor contributor : classLoaderService.loadJavaServices( TypeContributor.class ) ) {
+			contributor.contribute( typeContributions, serviceRegistry );
+		}
+		// from app registrations
+		for ( TypeContributor contributor : typeContributorRegistrations ) {
+			contributor.contribute( typeContributions, serviceRegistry );
+		}
+	}
 
 	/**
 	 * Create a {@link SessionFactory} using the properties and mappings in this configuration. The
@@ -1776,7 +1912,7 @@ public class Configuration implements Serializable {
 		ConfigurationHelper.resolvePlaceHolders( properties );
 		final ServiceRegistry serviceRegistry =  new StandardServiceRegistryBuilder()
 				.applySettings( properties )
-				.buildServiceRegistry();
+				.build();
 		setSessionFactoryObserver(
 				new SessionFactoryObserver() {
 					@Override
@@ -2151,23 +2287,42 @@ public class Configuration implements Serializable {
 		}
 	}
 
+	private JaccPermissionDeclarations jaccPermissionDeclarations;
+
 	private void parseSecurity(Element secNode) {
-		String contextId = secNode.attributeValue( "context" );
-		setProperty( Environment.JACC_CONTEXTID, contextId );
-		LOG.jaccContextId( contextId );
-		JACCConfiguration jcfg = new JACCConfiguration( contextId );
-		Iterator grantElements = secNode.elementIterator();
-		while ( grantElements.hasNext() ) {
-			Element grantElement = (Element) grantElements.next();
-			String elementName = grantElement.getName();
-			if ( "grant".equals( elementName ) ) {
-				jcfg.addPermission(
-						grantElement.attributeValue( "role" ),
-						grantElement.attributeValue( "entity-name" ),
-						grantElement.attributeValue( "actions" )
-					);
+		final String nodeContextId = secNode.attributeValue( "context" );
+
+		final String explicitContextId = getProperty( AvailableSettings.JACC_CONTEXT_ID );
+		if ( explicitContextId == null ) {
+			setProperty( AvailableSettings.JACC_CONTEXT_ID, nodeContextId );
+			LOG.jaccContextId( nodeContextId );
+		}
+		else {
+			// if they dont match, throw an error
+			if ( ! nodeContextId.equals( explicitContextId ) ) {
+				throw new HibernateException( "Non-matching JACC context ids" );
 			}
 		}
+		jaccPermissionDeclarations = new JaccPermissionDeclarations( nodeContextId );
+
+		Iterator grantElements = secNode.elementIterator();
+		while ( grantElements.hasNext() ) {
+			final Element grantElement = (Element) grantElements.next();
+			final String elementName = grantElement.getName();
+			if ( "grant".equals( elementName ) ) {
+				jaccPermissionDeclarations.addPermissionDeclaration(
+						new GrantedPermission(
+								grantElement.attributeValue( "role" ),
+								grantElement.attributeValue( "entity-name" ),
+								grantElement.attributeValue( "actions" )
+						)
+				);
+			}
+		}
+	}
+
+	public JaccPermissionDeclarations getJaccPermissionDeclarations() {
+		return jaccPermissionDeclarations;
 	}
 
 	RootClass getRootClassMapping(String clazz) throws MappingException {
@@ -2175,7 +2330,7 @@ public class Configuration implements Serializable {
 			return (RootClass) getClassMapping( clazz );
 		}
 		catch (ClassCastException cce) {
-			throw new MappingException( "You may only specify a cache for root <class> mappings" );
+			throw new MappingException( "You may only specify a cache for root <class> mappings.  Attempted on " + clazz );
 		}
 	}
 
@@ -2418,7 +2573,9 @@ public class Configuration implements Serializable {
 	}
 
 	public void addSqlFunction(String functionName, SQLFunction function) {
-		sqlFunctions.put( functionName, function );
+		// HHH-7721: SQLFunctionRegistry expects all lowercase.  Enforce,
+		// just in case a user's customer dialect uses mixed cases.
+		sqlFunctions.put( functionName.toLowerCase(), function );
 	}
 
 	public TypeResolver getTypeResolver() {
@@ -2442,6 +2599,10 @@ public class Configuration implements Serializable {
 
 	public void registerTypeOverride(CompositeUserType type, String[] keys) {
 		getTypeResolver().registerTypeOverride( type, keys );
+	}
+
+	public void registerTypeContributor(TypeContributor typeContributor) {
+		typeContributorRegistrations.add( typeContributor );
 	}
 
 	public SessionFactoryObserver getSessionFactoryObserver() {
@@ -2481,6 +2642,42 @@ public class Configuration implements Serializable {
 	}
 
 	/**
+	 * Adds the AttributeConverter Class to this Configuration.
+	 *
+	 * @param attributeConverterClass The AttributeConverter class.
+	 */
+	public void addAttributeConverter(Class<? extends AttributeConverter> attributeConverterClass) {
+		final AttributeConverter attributeConverter;
+		try {
+			attributeConverter = attributeConverterClass.newInstance();
+		}
+		catch (Exception e) {
+			throw new AnnotationException(
+					"Unable to instantiate AttributeConverter [" + attributeConverterClass.getName() + "]"
+			);
+		}
+
+		addAttributeConverter( attributeConverter );
+	}
+
+	/**
+	 * Adds the AttributeConverter instance to this Configuration.  This form is mainly intended for developers
+	 * to programatically add their own AttributeConverter instance.  HEM, instead, uses the
+	 * {@link #addAttributeConverter(Class, boolean)} form
+	 *
+	 * @param attributeConverter The AttributeConverter instance.
+	 */
+	public void addAttributeConverter(AttributeConverter attributeConverter) {
+		boolean autoApply = false;
+		Converter converterAnnotation = attributeConverter.getClass().getAnnotation( Converter.class );
+		if ( converterAnnotation != null ) {
+			autoApply = converterAnnotation.autoApply();
+		}
+
+		addAttributeConverter( new AttributeConverterDefinition( attributeConverter, autoApply ) );
+	}
+
+	/**
 	 * Adds the AttributeConverter instance to this Configuration.  This form is mainly intended for developers
 	 * to programatically add their own AttributeConverter instance.  HEM, instead, uses the
 	 * {@link #addAttributeConverter(Class, boolean)} form
@@ -2490,20 +2687,30 @@ public class Configuration implements Serializable {
 	 * by its "entity attribute" parameterized type?
 	 */
 	public void addAttributeConverter(AttributeConverter attributeConverter, boolean autoApply) {
+		addAttributeConverter( new AttributeConverterDefinition( attributeConverter, autoApply ) );
+	}
+
+	public void addAttributeConverter(AttributeConverterDefinition definition) {
 		if ( attributeConverterDefinitionsByClass == null ) {
 			attributeConverterDefinitionsByClass = new ConcurrentHashMap<Class, AttributeConverterDefinition>();
 		}
 
-		final Object old = attributeConverterDefinitionsByClass.put(
-				attributeConverter.getClass(),
-				new AttributeConverterDefinition( attributeConverter, autoApply )
-		);
+		final Object old = attributeConverterDefinitionsByClass.put( definition.getAttributeConverter().getClass(), definition );
 
 		if ( old != null ) {
 			throw new AssertionFailure(
-					"AttributeConverter class [" + attributeConverter.getClass() + "] registered multiple times"
+					String.format(
+							"AttributeConverter class [%s] registered multiple times",
+							definition.getAttributeConverter().getClass()
+					)
 			);
 		}
+	}
+
+	public java.util.Collection<NamedEntityGraphDefinition> getNamedEntityGraphs() {
+		return namedEntityGraphMap == null
+				? Collections.<NamedEntityGraphDefinition>emptyList()
+				: namedEntityGraphMap.values();
 	}
 
 
@@ -2657,7 +2864,7 @@ public class Configuration implements Serializable {
 
 		public Table getTable(String schema, String catalog, String name) {
 			String key = Table.qualify(catalog, schema, name);
-			return tables.get(key);
+			return tables.get( key );
 		}
 
 		public Iterator<Table> iterateTables() {
@@ -2761,6 +2968,35 @@ public class Configuration implements Serializable {
 		private void applySQLQuery(String name, NamedSQLQueryDefinition query) throws DuplicateMappingException {
 			checkQueryName( name );
 			namedSqlQueries.put( name.intern(), query );
+		}
+
+		@Override
+		public void addNamedProcedureCallDefinition(NamedProcedureCallDefinition definition)
+				throws DuplicateMappingException {
+			final String name = definition.getRegisteredName();
+			if ( !defaultNamedProcedure.contains( name ) ) {
+				final NamedProcedureCallDefinition previous = namedProcedureCallMap.put( name, definition );
+				if ( previous != null ) {
+					throw new DuplicateMappingException( "named stored procedure query", name );
+				}
+			}
+		}
+		@Override
+		public void addDefaultNamedProcedureCallDefinition(NamedProcedureCallDefinition definition)
+				throws DuplicateMappingException {
+			addNamedProcedureCallDefinition( definition );
+			defaultNamedProcedure.add( definition.getRegisteredName() );
+		}
+
+		@Override
+		public void addNamedEntityGraphDefintion(NamedEntityGraphDefinition definition)
+				throws DuplicateMappingException {
+			final String name = definition.getRegisteredName();
+
+			final NamedEntityGraphDefinition previous = namedEntityGraphMap.put( name, definition );
+			if ( previous != null ) {
+				throw new DuplicateMappingException( "NamedEntityGraph", name );
+			}
 		}
 
 		public void addDefaultSQLQuery(String name, NamedSQLQueryDefinition query) {
@@ -2949,7 +3185,7 @@ public class Configuration implements Serializable {
 				final String existingLogicalName = ( String ) physicalToLogical.put( physicalName, logicalName );
 				if ( existingLogicalName != null && ! existingLogicalName.equals( logicalName ) ) {
 					throw new DuplicateMappingException(
-							" Table [" + tableName + "] contains phyical column name [" + physicalName
+							" Table [" + tableName + "] contains physical column name [" + physicalName
 									+ "] represented by different logical column names: [" + existingLogicalName
 									+ "], [" + logicalName + "]",
 							"column-binding",
@@ -2996,7 +3232,7 @@ public class Configuration implements Serializable {
 			}
 			return finalName;
 		}
-
+		@Override
 		public String getLogicalColumnName(String physicalName, Table table) throws MappingException {
 			String logical = null;
 			Table currentTable = table;
@@ -3017,7 +3253,7 @@ public class Configuration implements Serializable {
 					currentTable = null;
 				}
 			}
-			while ( logical == null && currentTable != null && description != null );
+			while ( logical == null && currentTable != null );
 			if ( logical == null ) {
 				throw new MappingException(
 						"Unable to find logical column name from physical name "
@@ -3140,27 +3376,65 @@ public class Configuration implements Serializable {
 
 		private Boolean useNewGeneratorMappings;
 
-		@SuppressWarnings({ "UnnecessaryUnboxing" })
+		@Override
 		public boolean useNewGeneratorMappings() {
 			if ( useNewGeneratorMappings == null ) {
 				final String booleanName = getConfigurationProperties()
 						.getProperty( AvailableSettings.USE_NEW_ID_GENERATOR_MAPPINGS );
 				useNewGeneratorMappings = Boolean.valueOf( booleanName );
 			}
-			return useNewGeneratorMappings.booleanValue();
+			return useNewGeneratorMappings;
+		}
+
+
+		private Boolean implicitDiscriminatorColumnForJoinedInheritance;
+
+		@Override
+		public boolean useImplicitDiscriminatorColumnForJoinedInheritance() {
+			if ( implicitDiscriminatorColumnForJoinedInheritance == null ) {
+				final String booleanName = getConfigurationProperties()
+						.getProperty( AvailableSettings.IMPLICIT_DISCRIMINATOR_COLUMNS_FOR_JOINED_SUBCLASS );
+				implicitDiscriminatorColumnForJoinedInheritance = Boolean.valueOf( booleanName );
+			}
+			return implicitDiscriminatorColumnForJoinedInheritance;
+		}
+
+
+		private Boolean ignoreExplicitDiscriminatorColumnForJoinedInheritance;
+
+		@Override
+		public boolean ignoreExplicitDiscriminatorColumnForJoinedInheritance() {
+			if ( ignoreExplicitDiscriminatorColumnForJoinedInheritance == null ) {
+				final String booleanName = getConfigurationProperties()
+						.getProperty( AvailableSettings.IGNORE_EXPLICIT_DISCRIMINATOR_COLUMNS_FOR_JOINED_SUBCLASS );
+				ignoreExplicitDiscriminatorColumnForJoinedInheritance = Boolean.valueOf( booleanName );
+			}
+			return ignoreExplicitDiscriminatorColumnForJoinedInheritance;
+		}
+
+
+		private Boolean useNationalizedCharacterData;
+
+		@Override
+		public boolean useNationalizedCharacterData() {
+			if ( useNationalizedCharacterData == null ) {
+				final String booleanName = getConfigurationProperties()
+						.getProperty( AvailableSettings.USE_NATIONALIZED_CHARACTER_DATA );
+				useNationalizedCharacterData = Boolean.valueOf( booleanName );
+			}
+			return useNationalizedCharacterData;
 		}
 
 		private Boolean forceDiscriminatorInSelectsByDefault;
 
 		@Override
-		@SuppressWarnings( {"UnnecessaryUnboxing"})
 		public boolean forceDiscriminatorInSelectsByDefault() {
 			if ( forceDiscriminatorInSelectsByDefault == null ) {
 				final String booleanName = getConfigurationProperties()
 						.getProperty( AvailableSettings.FORCE_DISCRIMINATOR_IN_SELECTS_BY_DEFAULT );
 				forceDiscriminatorInSelectsByDefault = Boolean.valueOf( booleanName );
 			}
-			return forceDiscriminatorInSelectsByDefault.booleanValue();
+			return forceDiscriminatorInSelectsByDefault;
 		}
 
 		public IdGenerator getGenerator(String name) {
@@ -3300,6 +3574,15 @@ public class Configuration implements Serializable {
 			holderList.addAll( uniqueConstraintHolders );
 		}
 
+		public void addJpaIndexHolders(Table table, List<JPAIndexHolder> holders) {
+			List<JPAIndexHolder> holderList = jpaIndexHoldersByTable.get( table );
+			if ( holderList == null ) {
+				holderList = new ArrayList<JPAIndexHolder>();
+				jpaIndexHoldersByTable.put( table, holderList );
+			}
+			holderList.addAll( holders );
+		}
+
 		public void addMappedBy(String entityName, String propertyName, String inversePropertyName) {
 			mappedByResolver.put( entityName + "." + propertyName, inversePropertyName );
 		}
@@ -3343,7 +3626,7 @@ public class Configuration implements Serializable {
 			//Do not cache this value as we lazily set it in Hibernate Annotation (AnnotationConfiguration)
 			//TODO use a dedicated protected useQuotedIdentifier flag in Configuration (overriden by AnnotationConfiguration)
 			String setting = (String) properties.get( Environment.GLOBALLY_QUOTED_IDENTIFIERS );
-			return setting != null && Boolean.valueOf( setting ).booleanValue();
+			return setting != null && Boolean.valueOf( setting );
 		}
 
 		public NamingStrategy getNamingStrategy() {

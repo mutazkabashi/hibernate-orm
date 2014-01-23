@@ -32,8 +32,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.dom4j.Element;
-
 import org.hibernate.LockMode;
 import org.hibernate.MappingException;
 import org.hibernate.engine.ResultSetMappingDefinition;
@@ -49,6 +47,8 @@ import org.hibernate.mapping.Property;
 import org.hibernate.mapping.ToOne;
 import org.hibernate.mapping.Value;
 import org.hibernate.type.Type;
+
+import org.dom4j.Element;
 
 /**
  * @author Emmanuel Bernard
@@ -374,6 +374,9 @@ public abstract class ResultSetMappingBinder {
 		}
 		else if ( "upgrade-nowait".equals( lockMode ) ) {
 			return LockMode.UPGRADE_NOWAIT;
+		}
+		else if ( "upgrade-skiplocked".equals( lockMode )) {
+			return LockMode.UPGRADE_SKIPLOCKED;
 		}
 		else if ( "write".equals( lockMode ) ) {
 			return LockMode.WRITE;

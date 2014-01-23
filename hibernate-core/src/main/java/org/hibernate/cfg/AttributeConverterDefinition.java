@@ -23,15 +23,15 @@
  */
 package org.hibernate.cfg;
 
-import javax.persistence.AttributeConverter;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
-
-import org.jboss.logging.Logger;
+import javax.persistence.AttributeConverter;
 
 import org.hibernate.AnnotationException;
 import org.hibernate.AssertionFailure;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author Steve Ebersole
@@ -120,5 +120,16 @@ public class AttributeConverterDefinition {
 		}
 
 		return (Class) boundTypes[0];
+	}
+
+	@Override
+	public String toString() {
+		return String.format(
+				"%s[converterClass=%s, domainType=%s, jdbcType=%s]",
+				this.getClass().getName(),
+				attributeConverter.getClass().getName(),
+				entityAttributeType.getName(),
+				databaseColumnType.getName()
+		);
 	}
 }

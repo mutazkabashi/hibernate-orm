@@ -34,7 +34,10 @@ import org.hibernate.LockMode;
  *
  * @author Steve Ebersole
  */
-public class LockModeConverter {
+public final class LockModeConverter {
+	private LockModeConverter() {
+	}
+
 	/**
 	 * Convert from the Hibernate specific LockMode to the JPA defined LockModeType.
 	 *
@@ -57,7 +60,8 @@ public class LockModeConverter {
 		}
 		else if ( lockMode == LockMode.PESSIMISTIC_WRITE
 				|| lockMode == LockMode.UPGRADE
-				|| lockMode == LockMode.UPGRADE_NOWAIT ) {
+				|| lockMode == LockMode.UPGRADE_NOWAIT
+                || lockMode == LockMode.UPGRADE_SKIPLOCKED) {
 			return LockModeType.PESSIMISTIC_WRITE;
 		}
 		else if ( lockMode == LockMode.PESSIMISTIC_FORCE_INCREMENT

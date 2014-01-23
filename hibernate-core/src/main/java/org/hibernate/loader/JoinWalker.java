@@ -24,6 +24,7 @@
 package org.hibernate.loader;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -91,6 +92,9 @@ public class JoinWalker {
 
 	}
 
+	public List getAssociations() {
+		return Collections.unmodifiableList( associations );
+	}
 
 	public String[] getCollectionSuffixes() {
 		return collectionSuffixes;
@@ -539,6 +543,34 @@ public class JoinWalker {
 				);
 			}
 		}
+
+		// if the entity has a composite identifier, see if we need to handle
+		// its sub-properties separately
+		final Type idType = persister.getIdentifierType();
+		if ( idType.isComponentType() ) {
+			final CompositeType cidType = (CompositeType) idType;
+			if ( cidType.isEmbedded() ) {
+				// we have an embedded composite identifier.  Most likely we need to process the composite
+				// properties separately, although there is an edge case where the identifier is really
+				// a simple identifier (single value) wrapped in a JPA @IdClass or even in the case of a
+				// a simple identifier (single value) wrapped in a Hibernate composite type.
+				//
+				// We really do not have a built-in method to determine that.  However, generally the
+				// persister would report that there is single, physical identifier property which is
+				// explicitly at odds with the notion of "embedded composite".  So we use that for now
+				if ( persister.getEntityMetamodel().getIdentifierProperty().isEmbedded() ) {
+					walkComponentTree(
+							cidType,
+							-1,
+							0,
+							persister,
+							alias,
+							path,
+							currentDepth
+					);
+				}
+			}
+		}
 	}
 
 	/**
@@ -696,7 +728,7 @@ public class JoinWalker {
 
 	protected boolean isTooDeep(int currentDepth) {
 		Integer maxFetchDepth = getFactory().getSettings().getMaximumFetchDepth();
-		return maxFetchDepth!=null && currentDepth >= maxFetchDepth.intValue();
+		return maxFetchDepth!=null && currentDepth >= maxFetchDepth;
 	}
 	
 	protected boolean isTooManyCollections() {
@@ -813,7 +845,7 @@ public class JoinWalker {
 		}
 
 		Integer maxFetchDepth = getFactory().getSettings().getMaximumFetchDepth();
-		final boolean tooDeep = maxFetchDepth!=null && depth >= maxFetchDepth.intValue();
+		final boolean tooDeep = maxFetchDepth!=null && depth >= maxFetchDepth;
 		
 		return !tooDeep && !isDuplicateAssociation(lhsTable, lhsColumnNames, type);
 	}

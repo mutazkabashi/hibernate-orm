@@ -25,23 +25,23 @@ package org.hibernate.boot.registry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 
+import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
+import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
 import org.hibernate.cfg.Environment;
 import org.hibernate.integrator.spi.Integrator;
 import org.hibernate.integrator.spi.IntegratorService;
-import org.hibernate.integrator.spi.ServiceContributingIntegrator;
 import org.hibernate.internal.jaxb.cfg.JaxbHibernateConfiguration;
 import org.hibernate.internal.util.config.ConfigurationHelper;
-import org.hibernate.boot.registry.internal.BootstrapServiceRegistryImpl;
 import org.hibernate.service.ConfigLoader;
 import org.hibernate.service.Service;
 import org.hibernate.service.ServiceRegistry;
 import org.hibernate.service.StandardServiceInitiators;
 import org.hibernate.service.internal.ProvidedService;
-import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
+import org.hibernate.service.spi.ServiceContributor;
 
 /**
  * Builder for standard {@link org.hibernate.service.ServiceRegistry} instances.
@@ -52,6 +52,9 @@ import org.hibernate.boot.registry.internal.StandardServiceRegistryImpl;
  * @see org.hibernate.boot.registry.BootstrapServiceRegistryBuilder
  */
 public class StandardServiceRegistryBuilder {
+	/**
+	 * The default resource name for a hibernate configuration xml file.
+	 */
 	public static final String DEFAULT_CFG_RESOURCE_NAME = "hibernate.cfg.xml";
 
 	private final Map settings;
@@ -62,10 +65,10 @@ public class StandardServiceRegistryBuilder {
 	private final ConfigLoader configLoader;
 
 	/**
-	 * Create a default builder
+	 * Create a default builder.
 	 */
 	public StandardServiceRegistryBuilder() {
-		this( new BootstrapServiceRegistryImpl() );
+		this( new BootstrapServiceRegistryBuilder().build() );
 	}
 
 	/**
@@ -95,8 +98,10 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Read settings from a {@link Properties} file.  Differs from {@link #configure()} and {@link #configure(String)}
-	 * in that here we read a {@link Properties} file while for {@link #configure} we read the XML variant.
+	 * Read settings from a {@link java.util.Properties} file by resource name.
+	 *
+	 * Differs from {@link #configure()} and {@link #configure(String)} in that here we expect to read a
+	 * {@link java.util.Properties} file while for {@link #configure} we read the XML variant.
 	 *
 	 * @param resourceName The name by which to perform a resource look up for the properties file.
 	 *
@@ -112,7 +117,7 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Read setting information from an XML file using the standard resource location
+	 * Read setting information from an XML file using the standard resource location.
 	 *
 	 * @return this, for method chaining
 	 *
@@ -125,7 +130,7 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Read setting information from an XML file using the named resource location
+	 * Read setting information from an XML file using the named resource location.
 	 *
 	 * @param resourceName The named resource
 	 *
@@ -135,7 +140,7 @@ public class StandardServiceRegistryBuilder {
 	 */
 	@SuppressWarnings( {"unchecked"})
 	public StandardServiceRegistryBuilder configure(String resourceName) {
-		JaxbHibernateConfiguration configurationElement = configLoader.loadConfigXmlResource( resourceName );
+		final JaxbHibernateConfiguration configurationElement = configLoader.loadConfigXmlResource( resourceName );
 		for ( JaxbHibernateConfiguration.JaxbSessionFactory.JaxbProperty xmlProperty : configurationElement.getSessionFactory().getProperty() ) {
 			settings.put( xmlProperty.getName(), xmlProperty.getValue() );
 		}
@@ -144,7 +149,7 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Apply a setting value
+	 * Apply a setting value.
 	 *
 	 * @param settingName The name of the setting
 	 * @param value The value to use.
@@ -158,7 +163,7 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Apply a groups of setting values
+	 * Apply a groups of setting values.
 	 *
 	 * @param settings The incoming settings to apply
 	 *
@@ -184,7 +189,7 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Adds a user-provided service
+	 * Adds a user-provided service.
 	 *
 	 * @param serviceRole The role of the service being added
 	 * @param service The service implementation
@@ -198,28 +203,50 @@ public class StandardServiceRegistryBuilder {
 	}
 
 	/**
-	 * Build the service registry accounting for all settings and service initiators and services.
+	 * Build the StandardServiceRegistry.
 	 *
-	 * @return The built service registry
+	 * @return The StandardServiceRegistry.
 	 */
-	public ServiceRegistry buildServiceRegistry() {
-		Map<?,?> settingsCopy = new HashMap();
+	@SuppressWarnings("unchecked")
+	public StandardServiceRegistry build() {
+		final Map<?,?> settingsCopy = new HashMap();
 		settingsCopy.putAll( settings );
 		Environment.verifyProperties( settingsCopy );
 		ConfigurationHelper.resolvePlaceHolders( settingsCopy );
 
-		for ( Integrator integrator : bootstrapServiceRegistry.getService( IntegratorService.class ).getIntegrators() ) {
-			if ( ServiceContributingIntegrator.class.isInstance( integrator ) ) {
-				ServiceContributingIntegrator.class.cast( integrator ).prepareServices( this );
-			}
-		}
+		applyServiceContributingIntegrators();
+		applyServiceContributors();
 
 		return new StandardServiceRegistryImpl( bootstrapServiceRegistry, initiators, providedServices, settingsCopy );
+	}
+
+	@SuppressWarnings("deprecation")
+	private void applyServiceContributingIntegrators() {
+		for ( Integrator integrator : bootstrapServiceRegistry.getService( IntegratorService.class ).getIntegrators() ) {
+			if ( org.hibernate.integrator.spi.ServiceContributingIntegrator.class.isInstance( integrator ) ) {
+				org.hibernate.integrator.spi.ServiceContributingIntegrator.class.cast( integrator ).prepareServices( this );
+			}
+		}
+	}
+
+	private void applyServiceContributors() {
+		final LinkedHashSet<ServiceContributor> serviceContributors =
+				bootstrapServiceRegistry.getService( ClassLoaderService.class )
+						.loadJavaServices( ServiceContributor.class );
+
+		for ( ServiceContributor serviceContributor : serviceContributors ) {
+			serviceContributor.contribute( this );
+		}
 	}
 
 	/**
 	 * Temporarily exposed since Configuration is still around and much code still uses Configuration.  This allows
 	 * code to configure the builder and access that to configure Configuration object (used from HEM atm).
+	 *
+	 * @return The settings map.
+	 *
+	 * @deprecated Temporarily exposed since Configuration is still around and much code still uses Configuration.
+	 * This allows code to configure the builder and access that to configure Configuration object (used from HEM atm).
 	 */
 	@Deprecated
 	public Map getSettings() {

@@ -29,23 +29,29 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
-import org.jboss.logging.Logger;
+import org.hibernate.dialect.Dialect;
+import org.hibernate.internal.util.StringHelper;
+import org.hibernate.internal.util.collections.CollectionHelper;
+
+import org.hibernate.testing.DialectCheck;
+import org.hibernate.testing.FailureExpected;
+import org.hibernate.testing.RequiresDialect;
+import org.hibernate.testing.RequiresDialectFeature;
+import org.hibernate.testing.RequiresDialects;
+import org.hibernate.testing.Skip;
+import org.hibernate.testing.SkipForDialect;
+import org.hibernate.testing.SkipForDialects;
+import org.junit.BeforeClass;
 import org.junit.Ignore;
+import org.junit.Test;
 import org.junit.runner.manipulation.NoTestsRemainException;
+import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.BlockJUnit4ClassRunner;
 import org.junit.runners.model.FrameworkMethod;
 import org.junit.runners.model.InitializationError;
 import org.junit.runners.model.Statement;
 
-import org.hibernate.dialect.Dialect;
-import org.hibernate.internal.util.StringHelper;
-import org.hibernate.internal.util.collections.CollectionHelper;
-import org.hibernate.testing.DialectCheck;
-import org.hibernate.testing.FailureExpected;
-import org.hibernate.testing.RequiresDialect;
-import org.hibernate.testing.RequiresDialectFeature;
-import org.hibernate.testing.Skip;
-import org.hibernate.testing.SkipForDialect;
+import org.jboss.logging.Logger;
 
 /**
  * The Hibernate-specific {@link org.junit.runner.Runner} implementation which layers {@link ExtendedFrameworkMethod}
@@ -74,7 +80,7 @@ public class CustomRunner extends BlockJUnit4ClassRunner {
 		return testClassMetadata;
 	}
 
-    private Boolean isAllTestsIgnored = null;
+    private Boolean isAllTestsIgnored;
 
     private boolean isAllTestsIgnored() {
         if ( isAllTestsIgnored == null ) {
@@ -117,9 +123,22 @@ public class CustomRunner extends BlockJUnit4ClassRunner {
 		);
 	}
 
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @see org.junit.runners.ParentRunner#classBlock(org.junit.runner.notification.RunNotifier)
+	 */
+	@Override
+	protected Statement classBlock( RunNotifier notifier ) {
+		log.info( BeforeClass.class.getSimpleName() + ": " + getName() );
+
+		return super.classBlock( notifier );
+	}
 
 	@Override
 	protected Statement methodBlock(FrameworkMethod method) {
+		log.info( Test.class.getSimpleName() + ": " + method.getName() );
+
 		final Statement originalMethodBlock = super.methodBlock( method );
 		final ExtendedFrameworkMethod extendedFrameworkMethod = (ExtendedFrameworkMethod) method;
 		return new FailureExpectedHandler( originalMethodBlock, testClassMetadata, extendedFrameworkMethod, testInstance );
@@ -151,7 +170,9 @@ public class CustomRunner extends BlockJUnit4ClassRunner {
 	}
 
 	protected void sortMethods(List<FrameworkMethod> computedTestMethods) {
-		if( CollectionHelper.isEmpty( computedTestMethods ))return;
+		if ( CollectionHelper.isEmpty( computedTestMethods ) ) {
+			return;
+		}
 		Collections.sort( computedTestMethods, new Comparator<FrameworkMethod>() {
 			@Override
 			public int compare(FrameworkMethod o1, FrameworkMethod o2) {
@@ -228,9 +249,10 @@ public class CustomRunner extends BlockJUnit4ClassRunner {
 			}
 		}
 
-		// @SkipForDialect
-		SkipForDialect skipForDialectAnn = Helper.locateAnnotation( SkipForDialect.class, frameworkMethod, getTestClass() );
-		if ( skipForDialectAnn != null ) {
+		// @SkipForDialects & @SkipForDialect
+		for ( SkipForDialect skipForDialectAnn : Helper.collectAnnotations(
+				SkipForDialect.class, SkipForDialects.class, frameworkMethod, getTestClass()
+		) ) {
 			for ( Class<? extends Dialect> dialectClass : skipForDialectAnn.value() ) {
 				if ( skipForDialectAnn.strictMatching() ) {
 					if ( dialectClass.equals( dialect.getClass() ) ) {
@@ -245,9 +267,10 @@ public class CustomRunner extends BlockJUnit4ClassRunner {
 			}
 		}
 
-		// @RequiresDialect
-		RequiresDialect requiresDialectAnn = Helper.locateAnnotation( RequiresDialect.class, frameworkMethod, getTestClass() );
-		if ( requiresDialectAnn != null ) {
+		// @RequiresDialects & @RequiresDialect
+		for ( RequiresDialect requiresDialectAnn : Helper.collectAnnotations(
+				RequiresDialect.class, RequiresDialects.class, frameworkMethod, getTestClass()
+		) ) {
 			boolean foundMatch = false;
 			for ( Class<? extends Dialect> dialectClass : requiresDialectAnn.value() ) {
 				foundMatch = requiresDialectAnn.strictMatching()

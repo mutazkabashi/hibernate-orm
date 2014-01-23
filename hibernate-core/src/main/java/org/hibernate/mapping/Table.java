@@ -26,7 +26,6 @@ package org.hibernate.mapping;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,21 +54,20 @@ public class Table implements RelationalModel, Serializable {
 	private Map columns = new LinkedHashMap();
 	private KeyValue idValue;
 	private PrimaryKey primaryKey;
-	private Map indexes = new HashMap();
-	private Map foreignKeys = new HashMap();
-	private Map<String,UniqueKey> uniqueKeys = new HashMap<String,UniqueKey>();
-	private final int uniqueInteger;
+	private Map<String, Index> indexes = new LinkedHashMap<String, Index>();
+	private Map foreignKeys = new LinkedHashMap();
+	private Map<String,UniqueKey> uniqueKeys = new LinkedHashMap<String,UniqueKey>();
+	private int uniqueInteger;
 	private boolean quoted;
 	private boolean schemaQuoted;
 	private boolean catalogQuoted;
-	private static int tableCounter = 0;
 	private List checkConstraints = new ArrayList();
 	private String rowId;
 	private String subselect;
 	private boolean isAbstract;
-	private boolean hasDenormalizedTables = false;
+	private boolean hasDenormalizedTables;
 	private String comment;
-
+	
 	static class ForeignKeyKey implements Serializable {
 		String referencedClassName;
 		List columns;
@@ -100,9 +98,7 @@ public class Table implements RelationalModel, Serializable {
 		}
 	}
 
-	public Table() {
-		uniqueInteger = tableCounter++;
-	}
+	public Table() { }
 
 	public Table(String name) {
 		this();
@@ -217,7 +213,7 @@ public class Table implements RelationalModel, Serializable {
 	}
 
 	public void addColumn(Column column) {
-		Column old = (Column) getColumn( column );
+		Column old = getColumn( column );
 		if ( old == null ) {
 			columns.put( column.getCanonicalName(), column );
 			column.uniqueInteger = columns.size();
@@ -235,7 +231,7 @@ public class Table implements RelationalModel, Serializable {
 		return columns.values().iterator();
 	}
 
-	public Iterator getIndexIterator() {
+	public Iterator<Index> getIndexIterator() {
 		return indexes.values().iterator();
 	}
 
@@ -243,16 +239,16 @@ public class Table implements RelationalModel, Serializable {
 		return foreignKeys.values().iterator();
 	}
 
-	public Iterator getUniqueKeyIterator() {
+	public Iterator<UniqueKey> getUniqueKeyIterator() {
 		return getUniqueKeys().values().iterator();
 	}
 
-	Map getUniqueKeys() {
+	Map<String, UniqueKey> getUniqueKeys() {
 		cleanseUniqueKeyMapIfNeeded();
 		return uniqueKeys;
 	}
 
-	private int sizeOfUniqueKeyMapOnLastCleanse = 0;
+	private int sizeOfUniqueKeyMapOnLastCleanse;
 
 	private void cleanseUniqueKeyMapIfNeeded() {
 		if ( uniqueKeys.size() == sizeOfUniqueKeyMapOnLastCleanse ) {
@@ -328,6 +324,36 @@ public class Table implements RelationalModel, Serializable {
 				&& uniqueKey.getColumns().containsAll( primaryKey.getColumns() );
 	}
 
+	@Override
+	public int hashCode() {
+		final int prime = 31;
+		int result = 1;
+		result = prime * result
+			+ ((catalog == null) ? 0 : isCatalogQuoted() ? catalog.hashCode() : catalog.toLowerCase().hashCode());
+		result = prime * result + ((name == null) ? 0 : isQuoted() ? name.hashCode() : name.toLowerCase().hashCode());
+		result = prime * result
+			+ ((schema == null) ? 0 : isSchemaQuoted() ? schema.hashCode() : schema.toLowerCase().hashCode());
+		return result;
+	}
+
+	@Override
+	public boolean equals(Object object) {
+		return object instanceof Table && equals((Table) object);
+	}
+
+	public boolean equals(Table table) {
+		if (null == table) {
+			return false;
+		}
+		if (this == table) {
+			return true;
+		}
+
+		return isQuoted() ? name.equals(table.getName()) : name.equalsIgnoreCase(table.getName())
+			&& ((schema == null && table.getSchema() != null) ? false : (schema == null) ? true : isSchemaQuoted() ? schema.equals(table.getSchema()) : schema.equalsIgnoreCase(table.getSchema()))
+			&& ((catalog == null && table.getCatalog() != null) ? false : (catalog == null) ? true : isCatalogQuoted() ? catalog.equals(table.getCatalog()) : catalog.equalsIgnoreCase(table.getCatalog()));
+	}
+	
 	public void validateColumns(Dialect dialect, Mapping mapping, TableMetadata tableInfo) {
 		Iterator iter = getColumnIterator();
 		while ( iter.hasNext() ) {
@@ -367,6 +393,7 @@ public class Table implements RelationalModel, Serializable {
 
 		Iterator iter = getColumnIterator();
 		List results = new ArrayList();
+		
 		while ( iter.hasNext() ) {
 			Column column = (Column) iter.next();
 
@@ -392,11 +419,12 @@ public class Table implements RelationalModel, Serializable {
 					alter.append( " not null" );
 				}
 
-				boolean useUniqueConstraint = column.isUnique() &&
-						dialect.supportsUnique() &&
-						( column.isNullable() || dialect.supportsNotNullUnique() );
-				if ( useUniqueConstraint ) {
-					alter.append( " unique" );
+				if ( column.isUnique() ) {
+					String keyName = Constraint.generateName( "UK_", this, column );
+					UniqueKey uk = getOrCreateUniqueKey( keyName );
+					uk.addColumn( column );
+					alter.append( dialect.getUniqueDelegate()
+							.getColumnDefinitionUniquenessFragment( column ) );
 				}
 
 				if ( column.hasCheckConstraint() && dialect.supportsColumnCheck() ) {
@@ -409,6 +437,8 @@ public class Table implements RelationalModel, Serializable {
 				if ( columnComment != null ) {
 					alter.append( dialect.getColumnComment( columnComment ) );
 				}
+
+				alter.append( dialect.getAddColumnSuffixString() );
 
 				results.add( alter.toString() );
 			}
@@ -493,19 +523,15 @@ public class Table implements RelationalModel, Serializable {
 				}
 
 			}
-
-			boolean useUniqueConstraint = col.isUnique() &&
-					( col.isNullable() || dialect.supportsNotNullUnique() );
-			if ( useUniqueConstraint ) {
-				if ( dialect.supportsUnique() ) {
-					buf.append( " unique" );
-				}
-				else {
-					UniqueKey uk = getOrCreateUniqueKey( col.getQuotedName( dialect ) + '_' );
-					uk.addColumn( col );
-				}
+			
+			if ( col.isUnique() ) {
+				String keyName = Constraint.generateName( "UK_", this, col );
+				UniqueKey uk = getOrCreateUniqueKey( keyName );
+				uk.addColumn( col );
+				buf.append( dialect.getUniqueDelegate()
+						.getColumnDefinitionUniquenessFragment( col ) );
 			}
-
+				
 			if ( col.hasCheckConstraint() && dialect.supportsColumnCheck() ) {
 				buf.append( " check (" )
 						.append( col.getCheckConstraint() )
@@ -527,21 +553,7 @@ public class Table implements RelationalModel, Serializable {
 					.append( getPrimaryKey().sqlConstraintString( dialect ) );
 		}
 
-		if ( dialect.supportsUniqueConstraintInCreateAlterTable() ) {
-			Iterator ukiter = getUniqueKeyIterator();
-			while ( ukiter.hasNext() ) {
-				UniqueKey uk = (UniqueKey) ukiter.next();
-				String constraint = uk.sqlConstraintString( dialect );
-				if ( constraint != null ) {
-					buf.append( ", " ).append( constraint );
-				}
-			}
-		}
-		/*Iterator idxiter = getIndexIterator();
-		while ( idxiter.hasNext() ) {
-			Index idx = (Index) idxiter.next();
-			buf.append(',').append( idx.sqlConstraintString(dialect) );
-		}*/
+		buf.append( dialect.getUniqueDelegate().getTableCreationUniqueConstraintsFragment( this ) );
 
 		if ( dialect.supportsTableCheck() ) {
 			Iterator chiter = checkConstraints.iterator();
@@ -562,16 +574,7 @@ public class Table implements RelationalModel, Serializable {
 	}
 
 	public String sqlDropString(Dialect dialect, String defaultCatalog, String defaultSchema) {
-		StringBuilder buf = new StringBuilder( "drop table " );
-		if ( dialect.supportsIfExistsBeforeTableName() ) {
-			buf.append( "if exists " );
-		}
-		buf.append( getQualifiedName( dialect, defaultCatalog, defaultSchema ) )
-				.append( dialect.getCascadeConstraintsString() );
-		if ( dialect.supportsIfExistsAfterTableName() ) {
-			buf.append( " if exists" );
-		}
-		return buf.toString();
+		return dialect.getDropTableString( getQualifiedName( dialect, defaultCatalog, defaultSchema ) );
 	}
 
 	public PrimaryKey getPrimaryKey() {
@@ -584,7 +587,7 @@ public class Table implements RelationalModel, Serializable {
 
 	public Index getOrCreateIndex(String indexName) {
 
-		Index index = (Index) indexes.get( indexName );
+		Index index =  indexes.get( indexName );
 
 		if ( index == null ) {
 			index = new Index();
@@ -597,11 +600,11 @@ public class Table implements RelationalModel, Serializable {
 	}
 
 	public Index getIndex(String indexName) {
-		return (Index) indexes.get( indexName );
+		return  indexes.get( indexName );
 	}
 
 	public Index addIndex(Index index) {
-		Index current = (Index) indexes.get( index.getName() );
+		Index current =  indexes.get( index.getName() );
 		if ( current != null ) {
 			throw new MappingException( "Index " + index.getName() + " already exists!" );
 		}
@@ -610,7 +613,7 @@ public class Table implements RelationalModel, Serializable {
 	}
 
 	public UniqueKey addUniqueKey(UniqueKey uniqueKey) {
-		UniqueKey current = (UniqueKey) uniqueKeys.get( uniqueKey.getName() );
+		UniqueKey current = uniqueKeys.get( uniqueKey.getName() );
 		if ( current != null ) {
 			throw new MappingException( "UniqueKey " + uniqueKey.getName() + " already exists!" );
 		}
@@ -619,18 +622,18 @@ public class Table implements RelationalModel, Serializable {
 	}
 
 	public UniqueKey createUniqueKey(List keyColumns) {
-		String keyName = "UK" + uniqueColumnString( keyColumns.iterator() );
+		String keyName = Constraint.generateName( "UK_", this, keyColumns );
 		UniqueKey uk = getOrCreateUniqueKey( keyName );
 		uk.addColumns( keyColumns.iterator() );
 		return uk;
 	}
 
 	public UniqueKey getUniqueKey(String keyName) {
-		return (UniqueKey) uniqueKeys.get( keyName );
+		return uniqueKeys.get( keyName );
 	}
 
 	public UniqueKey getOrCreateUniqueKey(String keyName) {
-		UniqueKey uk = (UniqueKey) uniqueKeys.get( keyName );
+		UniqueKey uk = uniqueKeys.get( keyName );
 
 		if ( uk == null ) {
 			uk = new UniqueKey();
@@ -655,21 +658,22 @@ public class Table implements RelationalModel, Serializable {
 		ForeignKey fk = (ForeignKey) foreignKeys.get( key );
 		if ( fk == null ) {
 			fk = new ForeignKey();
-			if ( keyName != null ) {
-				fk.setName( keyName );
-			}
-			else {
-				fk.setName( "FK" + uniqueColumnString( keyColumns.iterator(), referencedEntityName ) );
-				//TODO: add referencedClass to disambiguate to FKs on the same
-				//      columns, pointing to different tables
-			}
 			fk.setTable( this );
-			foreignKeys.put( key, fk );
 			fk.setReferencedEntityName( referencedEntityName );
 			fk.addColumns( keyColumns.iterator() );
 			if ( referencedColumns != null ) {
 				fk.addReferencedColumns( referencedColumns.iterator() );
 			}
+			
+			if ( keyName != null ) {
+				fk.setName( keyName );
+			}
+			else {
+				fk.setName( Constraint.generateName( fk.generatedConstraintNamePrefix(),
+						this, keyColumns ) );
+			}
+			
+			foreignKeys.put( key, fk );
 		}
 
 		if ( keyName != null ) {
@@ -679,21 +683,6 @@ public class Table implements RelationalModel, Serializable {
 		return fk;
 	}
 
-
-	public String uniqueColumnString(Iterator iterator) {
-		return uniqueColumnString( iterator, null );
-	}
-
-	public String uniqueColumnString(Iterator iterator, String referencedEntityName) {
-		int result = 0;
-		if ( referencedEntityName != null ) {
-			result += referencedEntityName.hashCode();
-		}
-		while ( iterator.hasNext() ) {
-			result += iterator.next().hashCode();
-		}
-		return ( Integer.toHexString( name.hashCode() ) + Integer.toHexString( result ) ).toUpperCase();
-	}
 
 
 	public String getSchema() {
@@ -722,6 +711,12 @@ public class Table implements RelationalModel, Serializable {
 		else {
 			this.catalog = catalog;
 		}
+	}
+
+	// This must be done outside of Table, rather than statically, to ensure
+	// deterministic alias names.  See HHH-2448.
+	public void setUniqueInteger( int uniqueInteger ) {
+		this.uniqueInteger = uniqueInteger;
 	}
 
 	public int getUniqueInteger() {

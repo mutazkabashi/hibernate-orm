@@ -24,6 +24,8 @@
 package org.hibernate.test.filter.hql;
 import java.util.Date;
 
+import org.hibernate.dialect.CUBRIDDialect;
+import org.hibernate.testing.SkipForDialect;
 import org.junit.Test;
 
 import org.hibernate.Session;
@@ -34,6 +36,11 @@ import static org.junit.Assert.assertEquals;
 /**
  * @author Steve Ebersole
  */
+@SkipForDialect(
+        value = CUBRIDDialect.class,
+        comment = "As of verion 8.4.1 CUBRID doesn't support temporary tables. This test fails with" +
+                "HibernateException: cannot doAfterTransactionCompletion multi-table deletes using dialect not supporting temp tables"
+)
 public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCase {
 	public String[] getMappings() {
 		return new String[] {
@@ -43,7 +50,6 @@ public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCa
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testFilteredJoinedSubclassHqlDeleteRoot() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -70,7 +76,6 @@ public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCa
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testFilteredJoinedSubclassHqlDeleteNonLeaf() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -97,7 +102,6 @@ public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCa
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testFilteredJoinedSubclassHqlDeleteLeaf() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -124,7 +128,6 @@ public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCa
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testFilteredJoinedSubclassHqlUpdateRoot() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -151,7 +154,6 @@ public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCa
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testFilteredJoinedSubclassHqlUpdateNonLeaf() {
 		Session s = openSession();
 		s.beginTransaction();
@@ -181,7 +183,6 @@ public class JoinedFilteredBulkManipulationTest extends BaseCoreFunctionalTestCa
 	}
 
 	@Test
-	@SuppressWarnings( {"UnnecessaryBoxing"})
 	public void testFilteredJoinedSubclassHqlUpdateLeaf() {
 		Session s = openSession();
 		s.beginTransaction();

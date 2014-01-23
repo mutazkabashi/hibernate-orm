@@ -31,6 +31,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -38,8 +39,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
-import org.jboss.logging.Logger;
 
 import org.hibernate.HibernateException;
 import org.hibernate.LockMode;
@@ -57,12 +56,14 @@ import org.hibernate.hql.internal.HolderInstantiator;
 import org.hibernate.hql.internal.NameGenerator;
 import org.hibernate.hql.spi.FilterTranslator;
 import org.hibernate.hql.spi.ParameterTranslations;
+import org.hibernate.internal.CoreLogging;
 import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.internal.IteratorImpl;
 import org.hibernate.internal.util.ReflectHelper;
 import org.hibernate.internal.util.StringHelper;
 import org.hibernate.internal.util.collections.ArrayHelper;
 import org.hibernate.loader.BasicLoader;
+import org.hibernate.loader.spi.AfterLoadAction;
 import org.hibernate.persister.collection.CollectionPersister;
 import org.hibernate.persister.collection.QueryableCollection;
 import org.hibernate.persister.entity.Loadable;
@@ -81,8 +82,7 @@ import org.hibernate.type.Type;
  * query string to SQL.
  */
 public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator {
-
-    private static final CoreMessageLogger LOG = Logger.getMessageLogger(CoreMessageLogger.class, QueryTranslatorImpl.class.getName());
+    private static final CoreMessageLogger LOG = CoreLogging.messageLogger( QueryTranslatorImpl.class );
 
 	private static final String[] NO_RETURN_ALIASES = new String[] {};
 
@@ -106,7 +106,7 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 	private final Map joins = new LinkedHashMap();
 	private final List orderByTokens = new ArrayList();
 	private final List groupByTokens = new ArrayList();
-	private final Set querySpaces = new HashSet();
+	private final Set<Serializable> querySpaces = new HashSet<Serializable>();
 	private final Set entitiesToFetch = new HashSet();
 
 	private final Map pathAliases = new HashMap();
@@ -122,9 +122,9 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 	private Type[] actualReturnTypes;
 	private String[][] scalarColumnNames;
 	private Map tokenReplacements;
-	private int nameCount = 0;
-	private int parameterCount = 0;
-	private boolean distinct = false;
+	private int nameCount;
+	private int parameterCount;
+	private boolean distinct;
 	private boolean compiled;
 	private String sqlString;
 	private Class holderClass;
@@ -243,8 +243,12 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 			renderSQL();
 		}
 		catch ( QueryException qe ) {
-			qe.setQueryString( queryString );
-			throw qe;
+			if ( qe.getQueryString() == null ) {
+				throw qe.wrapWithQueryString( queryString );
+			}
+			else {
+				throw qe;
+			}
 		}
 		catch ( MappingException me ) {
 			throw me;
@@ -252,9 +256,7 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 		catch ( Exception e ) {
 			LOG.debug( "Unexpected query compilation problem", e );
 			e.printStackTrace();
-			QueryException qe = new QueryException( "Incorrect query syntax", e );
-			qe.setQueryString( queryString );
-			throw qe;
+			throw new QueryException( "Incorrect query syntax", queryString, e );
 		}
 
 		postInstantiate();
@@ -546,13 +548,9 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
     public int[] getNamedParameterLocs(String name) throws QueryException {
 		Object o = namedParameters.get( name );
 		if ( o == null ) {
-			QueryException qe = new QueryException( ERROR_NAMED_PARAMETER_DOES_NOT_APPEAR + name );
-			qe.setQueryString( queryString );
-			throw qe;
+			throw new QueryException( ERROR_NAMED_PARAMETER_DOES_NOT_APPEAR + name, queryString );
 		}
-		if ( o instanceof Integer ) {
-			return new int[]{ ( ( Integer ) o ).intValue() };
-		}
+		if ( o instanceof Integer ) return new int[] { (Integer) o };
 		else {
 			return ArrayHelper.toIntArray( ( ArrayList ) o );
 		}
@@ -822,7 +820,7 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 
 	}
 
-	public final Set getQuerySpaces() {
+	public final Set<Serializable> getQuerySpaces() {
 		return querySpaces;
 	}
 
@@ -836,9 +834,7 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 	}
 
 	void addQuerySpaces(Serializable[] spaces) {
-		for ( int i = 0; i < spaces.length; i++ ) {
-			querySpaces.add( spaces[i] );
-		}
+		Collections.addAll( querySpaces, spaces );
 		if ( superQuery != null ) superQuery.addQuerySpaces( spaces );
 	}
 
@@ -937,6 +933,7 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 		pathJoins.put( path, joinSequence );
 	}
 
+	@Override
 	public List list(SessionImplementor session, QueryParameters queryParameters)
 			throws HibernateException {
 		return list( session, queryParameters, getQuerySpaces(), actualReturnTypes );
@@ -945,6 +942,7 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 	/**
 	 * Return the query results as an iterator
 	 */
+	@Override
 	public Iterator iterate(QueryParameters queryParameters, EventSource session)
 			throws HibernateException {
 
@@ -953,8 +951,10 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 		if ( stats ) startTime = System.currentTimeMillis();
 
 		try {
-			final ResultSet rs = executeQueryStatement( queryParameters, false, session );
-			final PreparedStatement st = (PreparedStatement) rs.getStatement();
+			final List<AfterLoadAction> afterLoadActions = new ArrayList<AfterLoadAction>();
+			final SqlStatementWrapper wrapper = executeQueryStatement( queryParameters, false, afterLoadActions, session );
+			final ResultSet rs = wrapper.getResultSet();
+			final PreparedStatement st = (PreparedStatement) wrapper.getStatement();
 			HolderInstantiator hi = HolderInstantiator.createClassicHolderInstantiator(holderConstructor, queryParameters.getResultTransformer());
 			Iterator result = new IteratorImpl( rs, st, session, queryParameters.isReadOnly( session ), returnTypes, getColumnNames(), hi );
 
@@ -1094,8 +1094,13 @@ public class QueryTranslatorImpl extends BasicLoader implements FilterTranslator
 	}
 
 	@Override
-    protected String applyLocks(String sql, LockOptions lockOptions, Dialect dialect) throws QueryException {
+    protected String applyLocks(
+			String sql,
+			QueryParameters parameters,
+			Dialect dialect,
+			List<AfterLoadAction> afterLoadActions) throws QueryException {
 		// can't cache this stuff either (per-invocation)
+		final LockOptions lockOptions = parameters.getLockOptions();
 		final String result;
 		if ( lockOptions == null ||
 			( lockOptions.getLockMode() == LockMode.NONE && lockOptions.getAliasLockCount() == 0 ) ) {

@@ -22,11 +22,10 @@
  * Boston, MA  02110-1301  USA
  */
 package org.hibernate.cfg;
+
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
-
-import org.jboss.logging.Logger;
 
 import org.hibernate.MappingException;
 import org.hibernate.internal.CoreMessageLogger;
@@ -35,6 +34,8 @@ import org.hibernate.mapping.IndexedCollection;
 import org.hibernate.mapping.OneToMany;
 import org.hibernate.mapping.Selectable;
 import org.hibernate.mapping.Value;
+
+import org.jboss.logging.Logger;
 
 /**
  * Collection second pass
@@ -61,12 +62,15 @@ public abstract class CollectionSecondPass implements SecondPass {
 
 	public void doSecondPass(java.util.Map persistentClasses)
 			throws MappingException {
-		LOG.debugf( "Second pass for collection: %s", collection.getRole() );
+		final boolean debugEnabled = LOG.isDebugEnabled();
+		if ( debugEnabled ) {
+			LOG.debugf( "Second pass for collection: %s", collection.getRole() );
+		}
 
 		secondPass( persistentClasses, localInheritedMetas ); // using local since the inheritedMetas at this point is not the correct map since it is always the empty map
 		collection.createAllKeys();
 
-		if ( LOG.isDebugEnabled() ) {
+		if ( debugEnabled ) {
 			String msg = "Mapped collection key: " + columns( collection.getKey() );
 			if ( collection.isIndexed() )
 				msg += ", index: " + columns( ( (IndexedCollection) collection ).getIndex() );

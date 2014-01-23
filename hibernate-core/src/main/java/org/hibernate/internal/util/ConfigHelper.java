@@ -31,11 +31,11 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.Properties;
 
-import org.jboss.logging.Logger;
-
 import org.hibernate.HibernateException;
 import org.hibernate.cfg.Environment;
 import org.hibernate.internal.CoreMessageLogger;
+
+import org.jboss.logging.Logger;
 
 /**
  * A simple class to centralize logic needed to locate config files on the system.
@@ -78,7 +78,7 @@ public final class ConfigHelper {
 
 		// First, try to locate this resource through the current
 		// context classloader.
-		ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+		ClassLoader contextClassLoader = ClassLoaderHelper.getContextClassLoader();
 		if (contextClassLoader!=null) {
 			url = contextClassLoader.getResource(path);
 		}
@@ -159,7 +159,7 @@ public final class ConfigHelper {
 				resource.substring(1) : resource;
 
 		InputStream stream = null;
-		ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+		ClassLoader classLoader = ClassLoaderHelper.getContextClassLoader();
 		if (classLoader!=null) {
 			stream = classLoader.getResourceAsStream( stripped );
 		}
@@ -182,7 +182,7 @@ public final class ConfigHelper {
 
 		InputStream stream = null;
 
-		ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+		ClassLoader classLoader = ClassLoaderHelper.getContextClassLoader();
 		if ( classLoader != null ) {
 			stream = classLoader.getResourceAsStream( resource );
 			if ( stream == null && hasLeadingSlash ) {

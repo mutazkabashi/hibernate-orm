@@ -24,7 +24,7 @@
 package org.hibernate;
 
 /**
- * Loads an entity by its natural identifier
+ * Loads an entity by its natural identifier.
  * 
  * @author Eric Dalquist
  * @author Steve Ebersole
@@ -65,7 +65,7 @@ public interface SimpleNaturalIdLoadAccess {
 	 *
 	 * @param naturalIdValue The value of the natural-id for the entity to retrieve
 	 *
-	 * @return the persistent instance or proxy
+	 * @return The persistent instance or proxy, if an instance exists.  Otherwise, {@code null}.
 	 */
 	public Object getReference(Object naturalIdValue);
 

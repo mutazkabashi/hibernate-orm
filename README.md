@@ -38,8 +38,12 @@ Executing Tasks
 Gradle uses the concept of build tasks (equivalent to Ant targets). You can get a list of available tasks 
 via 
 
-    gradle --tasks
-    
+    gradle tasks
+
+or if using gradle wrapper
+
+	./gradlew tasks
+
 ### Executing Tasks Across All Modules
 
 To execute a task across all modules, simply perform that task from the root directory.  Gradle will visit each
@@ -55,7 +59,7 @@ To execute a task in a specific module you can either:
 ### Common Java related tasks
 
 * _build_ - Assembles (jars) and tests this project
-* _buildDependents_ - Assembles and tests this project and all projects that depend on it.  So think of running this in hibernnate-entitymanager, Gradle would assemble and test hibernate-entitymanager as well as hibernate-envers (because envers depends on entitymanager)
+* _buildDependents_ - Assembles and tests this project and all projects that depend on it.  So think of running this in hibernate-entitymanager, Gradle would assemble and test hibernate-entitymanager as well as hibernate-envers (because envers depends on entitymanager)
 * _classes_ - Compiles the main classes
 * _testClasses_ - Compiles the test classes
 * _jar_ - Generates a jar archive with all the compiled classes
@@ -65,3 +69,4 @@ To execute a task in a specific module you can either:
 * _eclipse_ - Generates an Eclipse project
 * _idea_ - Generates an IntelliJ/IDEA project.
 * _clean_ - Cleans the build directory
+
